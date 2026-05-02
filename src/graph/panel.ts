@@ -155,6 +155,9 @@ export class CallGraphPanel {
       <option value="grid">grid</option>
     </select>
     <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;">
+      <input id="summarizedOnly" type="checkbox" checked /> summarized only
+    </label>
+    <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;">
       <input id="hideOrphans" type="checkbox" checked /> hide unconnected
     </label>
     <button id="refresh">Refresh</button>

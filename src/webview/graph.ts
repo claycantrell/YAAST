@@ -47,6 +47,8 @@ const layoutSelect = document.getElementById('layout') as HTMLSelectElement;
 const detail = document.getElementById('detail') as HTMLDivElement;
 const refreshBtn = document.getElementById('refresh') as HTMLButtonElement;
 const orphanToggle = document.getElementById('hideOrphans') as HTMLInputElement;
+const summarizedToggle = document.getElementById('summarizedOnly') as HTMLInputElement;
+const HARD_NODE_CAP = 1500;
 
 let cy: cytoscape.Core | undefined;
 let lastNodes: IncomingNode[] = [];
@@ -81,6 +83,7 @@ search.addEventListener('input', () => {
 
 layoutSelect.addEventListener('change', () => runLayout());
 orphanToggle.addEventListener('change', () => renderGraph(lastNodes, lastEdges));
+summarizedToggle.addEventListener('change', () => renderGraph(lastNodes, lastEdges));
 
 window.addEventListener('message', (ev) => {
   const msg = ev.data as Incoming;
@@ -104,13 +107,56 @@ window.addEventListener('message', (ev) => {
 vscodeApi.postMessage({ type: 'ready' });
 
 function renderGraph(nodes: IncomingNode[], edges: IncomingEdge[]) {
+  const summarizedOnly = summarizedToggle.checked;
   const hideOrphans = orphanToggle.checked;
-  const connected = new Set<string>();
-  for (const e of edges) {
-    connected.add(e.source);
-    connected.add(e.target);
+
+  // 1) Summarized-only: keep nodes that have a headline, plus their immediate
+  //    neighbors so the user sees context.
+  let allowed: Set<string> | undefined;
+  if (summarizedOnly) {
+    const summarized = new Set(nodes.filter((n) => !!n.headline).map((n) => n.id));
+    allowed = new Set(summarized);
+    for (const e of edges) {
+      if (summarized.has(e.source)) allowed.add(e.target);
+      if (summarized.has(e.target)) allowed.add(e.source);
+    }
   }
-  const visibleNodes = hideOrphans ? nodes.filter((n) => connected.has(n.id)) : nodes;
+
+  // 2) Hide unconnected (orphans).
+  let pool = allowed ? nodes.filter((n) => allowed!.has(n.id)) : nodes;
+  if (hideOrphans) {
+    const connected = new Set<string>();
+    for (const e of edges) {
+      if (allowed && (!allowed.has(e.source) || !allowed.has(e.target))) continue;
+      connected.add(e.source);
+      connected.add(e.target);
+    }
+    pool = pool.filter((n) => connected.has(n.id));
+  }
+
+  // 3) Hard cap so we don't try to render 60k DOM nodes. Keep nodes with the
+  //    most edges first, then summarized, then arbitrary.
+  let visibleNodes = pool;
+  let capNote = '';
+  if (pool.length > HARD_NODE_CAP) {
+    const degree = new Map<string, number>();
+    for (const e of edges) {
+      degree.set(e.source, (degree.get(e.source) ?? 0) + 1);
+      degree.set(e.target, (degree.get(e.target) ?? 0) + 1);
+    }
+    const sorted = pool.slice().sort((a, b) => {
+      const da = degree.get(a.id) ?? 0;
+      const db = degree.get(b.id) ?? 0;
+      if (db !== da) return db - da;
+      const sa = a.headline ? 1 : 0;
+      const sb = b.headline ? 1 : 0;
+      return sb - sa;
+    });
+    visibleNodes = sorted.slice(0, HARD_NODE_CAP);
+    capNote = ` · capped at ${HARD_NODE_CAP} of ${pool.length}`;
+  }
+
+  status.textContent = `showing ${visibleNodes.length} of ${nodes.length} symbols${capNote}`;
 
   // Auto-pick a layout that won't choke. cose is O(N²) per iteration and
   // freezes the webview past a few hundred nodes.
