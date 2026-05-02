@@ -1,9 +1,8 @@
 import * as vscode from 'vscode';
-import { buildCallGraph } from './indexer';
-import type { CallGraph } from './types';
+import { buildRepoGraph, type RepoGraph } from './repoIndexer';
 
 interface ReadyMessage { type: 'ready' }
-interface OpenMessage { type: 'open'; uri: string; pathKey: string }
+interface OpenMessage { type: 'open'; uri: string }
 interface RefreshMessage { type: 'refresh' }
 type IncomingMessage = ReadyMessage | OpenMessage | RefreshMessage;
 
@@ -11,11 +10,11 @@ export class CallGraphPanel {
   private static current: CallGraphPanel | undefined;
   private readonly disposables: vscode.Disposable[] = [];
   private indexCancel: vscode.CancellationTokenSource | undefined;
-  private buildPromise: Promise<CallGraph> | undefined;
+  private buildPromise: Promise<RepoGraph> | undefined;
 
   static show(
     context: vscode.ExtensionContext,
-    headlineFor: (pathKey: string) => string | undefined,
+    fileHeadlineFor: (uri: string) => string | undefined,
     output: vscode.OutputChannel,
   ): void {
     if (CallGraphPanel.current) {
@@ -24,8 +23,8 @@ export class CallGraphPanel {
       return;
     }
     const panel = vscode.window.createWebviewPanel(
-      'yaastCallGraph',
-      'YAAST: Call Graph',
+      'yaastRepoGraph',
+      'YAAST: Repo Graph',
       { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false },
       {
         enableScripts: true,
@@ -33,13 +32,13 @@ export class CallGraphPanel {
         localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'dist')],
       },
     );
-    CallGraphPanel.current = new CallGraphPanel(panel, context, headlineFor, output);
+    CallGraphPanel.current = new CallGraphPanel(panel, context, fileHeadlineFor, output);
   }
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
     private readonly context: vscode.ExtensionContext,
-    private readonly headlineFor: (pathKey: string) => string | undefined,
+    private readonly fileHeadlineFor: (uri: string) => string | undefined,
     private readonly output: vscode.OutputChannel,
   ) {
     this.panel.webview.html = this.renderHtml();
@@ -56,11 +55,7 @@ export class CallGraphPanel {
   }
 
   private async onMessage(msg: IncomingMessage): Promise<void> {
-    if (msg.type === 'ready') {
-      await this.refresh();
-      return;
-    }
-    if (msg.type === 'refresh') {
+    if (msg.type === 'ready' || msg.type === 'refresh') {
       await this.refresh();
       return;
     }
@@ -76,22 +71,20 @@ export class CallGraphPanel {
   }
 
   private async refresh(): Promise<void> {
-    if (this.buildPromise) return; // already building
+    if (this.buildPromise) return;
     this.indexCancel?.cancel();
     this.indexCancel = new vscode.CancellationTokenSource();
     const cancel = this.indexCancel.token;
-    this.buildPromise = buildCallGraph(
+    this.buildPromise = buildRepoGraph(
       cancel,
-      (p) => {
-        this.panel.webview.postMessage({ type: 'progress', ...p });
-      },
-      this.headlineFor,
+      (p) => this.panel.webview.postMessage({ type: 'progress', ...p }),
+      this.fileHeadlineFor,
     );
     try {
       const graph = await this.buildPromise;
-      this.panel.webview.postMessage({ type: 'callGraph', ...graph });
+      this.panel.webview.postMessage({ type: 'repoGraph', ...graph });
       this.output.appendLine(
-        `[graph] ${graph.nodes.length} nodes, ${graph.edges.length} edges, ${graph.scannedFiles} files in ${graph.durationMs}ms`,
+        `[graph] ${graph.files.length} files, ${graph.edges.length} import edges, ${graph.externals.length} external packages, ${graph.unresolvedImports} unresolved (${graph.durationMs}ms)`,
       );
     } catch (err) {
       const message = (err as Error).message;
@@ -115,57 +108,56 @@ export class CallGraphPanel {
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; img-src ${cspSource} data:; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';" />
-  <title>YAAST Call Graph</title>
+        content="default-src 'none'; img-src ${cspSource} data:; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' ${cspSource};" />
+  <title>YAAST Repo Graph</title>
   <style>
     :root {
       color-scheme: dark light;
-      --bg-node: #2563eb;
-      --bg-node-empty: #475569;
-      --border-node: #1e40af;
-      --fg-node: #ffffff;
-      --bg-group: rgba(100,116,139,0.08);
-      --border-group: #475569;
-      --fg-group: #94a3b8;
+      --node-default: #2563eb;
+      --node-summary: #16a34a;
+      --node-external: #6366f1;
+      --node-border: #1e40af;
+      --node-fg: #ffffff;
+      --group-bg: rgba(100,116,139,0.08);
+      --group-border: #475569;
+      --group-fg: #94a3b8;
       --edge: #64748b;
+      --edge-strong: #94a3b8;
       --selected: #f59e0b;
     }
     body { margin: 0; padding: 0; font-family: var(--vscode-font-family); color: var(--vscode-foreground); background: var(--vscode-editor-background); display: flex; flex-direction: column; height: 100vh; }
-    header { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--vscode-panel-border); }
+    header { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--vscode-panel-border); flex-wrap: wrap; }
     header input, header select, header button { background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); padding: 4px 8px; border-radius: 4px; font-size: 12px; }
-    header input { flex: 1; }
+    header input { flex: 1; min-width: 200px; }
+    header label { display:flex; align-items:center; gap:4px; font-size:11px; cursor:pointer; }
     header button { cursor: pointer; }
     #status { font-size: 11px; opacity: 0.8; padding: 4px 12px; border-bottom: 1px solid var(--vscode-panel-border); }
     #status.error { color: var(--vscode-errorForeground); }
     #content { flex: 1; display: flex; min-height: 0; }
     #graph { flex: 1; }
-    #detail { width: 280px; border-left: 1px solid var(--vscode-panel-border); padding: 12px; overflow-y: auto; font-size: 12px; }
-    #detail .meta { opacity: 0.7; font-size: 11px; margin-top: 4px; }
+    #detail { width: 300px; border-left: 1px solid var(--vscode-panel-border); padding: 12px; overflow-y: auto; font-size: 12px; }
+    #detail .meta { opacity: 0.7; font-size: 11px; margin-top: 4px; word-break: break-all; }
     #detail pre { font-size: 11px; overflow-x: auto; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.1)); padding: 6px; border-radius: 4px; margin-top: 8px; }
   </style>
 </head>
 <body>
   <header>
-    <input id="search" type="search" placeholder="filter by headline / name / file" />
-    <select id="layout" title="Layout (auto picks based on node count)">
+    <input id="search" type="search" placeholder="filter by path / headline" />
+    <select id="layout" title="Layout">
       <option value="auto">auto</option>
       <option value="cose">force</option>
       <option value="breadthfirst">tree</option>
       <option value="circle">circle</option>
       <option value="grid">grid</option>
     </select>
-    <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;">
-      <input id="summarizedOnly" type="checkbox" checked /> summarized only
-    </label>
-    <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;">
-      <input id="hideOrphans" type="checkbox" checked /> hide unconnected
-    </label>
+    <label><input id="hideOrphans" type="checkbox" checked /> hide unconnected</label>
+    <label><input id="showExternals" type="checkbox" /> external packages</label>
     <button id="refresh">Refresh</button>
   </header>
   <div id="status">initializing…</div>
   <div id="content">
     <div id="graph"></div>
-    <div id="detail">Click a node to see details and jump to source.</div>
+    <div id="detail">Click a file to jump to source.</div>
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>

@@ -284,11 +284,7 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('semanticFoldMode.openCallGraph', async () => {
       CallGraphPanel.show(
         context,
-        (pathKey) => {
-          const record = (cache as unknown as { pathToCacheKey: Map<string, string>; byCacheKey: Map<string, { summary: SummaryJson }> }).pathToCacheKey.get(pathKey);
-          if (!record) return undefined;
-          return (cache as unknown as { byCacheKey: Map<string, { summary: SummaryJson }> }).byCacheKey.get(record)?.summary.headline;
-        },
+        (uri) => cache.getFileByUri(uri)?.summary.headline,
         output,
       );
     }),

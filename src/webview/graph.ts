@@ -1,45 +1,42 @@
-// Webview-side bundle. Loaded into a vscode.WebviewPanel.
-// Receives the call-graph payload from the extension via postMessage,
-// renders with Cytoscape, and posts back navigation/hover events.
+// Webview-side bundle for YAAST Repo Graph.
+// Receives a {files, edges, externals} payload from the extension and renders
+// it via Cytoscape with file-as-node / import-as-edge semantics.
 
 import cytoscape, { type ElementDefinition } from 'cytoscape';
 
 declare const acquireVsCodeApi: () => { postMessage: (msg: unknown) => void };
 const vscodeApi = acquireVsCodeApi();
 
-interface IncomingNode {
+interface FileNode {
   id: string;
   uri: string;
-  filePath: string;
-  name: string;
-  kind: number;
-  headline?: string;
-  signature?: string;
+  basename: string;
+  folder: string;
+  language: string;
+  symbolCount: number;
+  loc: number;
+  fileSummaryHeadline?: string;
 }
-interface IncomingEdge {
+interface FileEdge {
   source: string;
   target: string;
-  count: number;
+  importCount: number;
 }
-interface CallGraphPayload {
-  type: 'callGraph';
-  nodes: IncomingNode[];
-  edges: IncomingEdge[];
+interface ExternalNode { id: string; usageCount: number }
+interface RepoGraphPayload {
+  type: 'repoGraph';
+  files: FileNode[];
+  edges: FileEdge[];
+  externals: ExternalNode[];
   scannedFiles: number;
+  unresolvedImports: number;
   durationMs: number;
 }
-interface ProgressPayload {
-  type: 'progress';
-  step: string;
-  scanned: number;
-  total: number;
-  message?: string;
-}
-interface ErrorPayload {
-  type: 'error';
-  message: string;
-}
-type Incoming = CallGraphPayload | ProgressPayload | ErrorPayload;
+interface ProgressPayload { type: 'progress'; step: string; scanned: number; total: number; message?: string }
+interface ErrorPayload { type: 'error'; message: string }
+type Incoming = RepoGraphPayload | ProgressPayload | ErrorPayload;
+
+const HARD_NODE_CAP = 1500;
 
 const status = document.getElementById('status') as HTMLDivElement;
 const search = document.getElementById('search') as HTMLInputElement;
@@ -47,48 +44,27 @@ const layoutSelect = document.getElementById('layout') as HTMLSelectElement;
 const detail = document.getElementById('detail') as HTMLDivElement;
 const refreshBtn = document.getElementById('refresh') as HTMLButtonElement;
 const orphanToggle = document.getElementById('hideOrphans') as HTMLInputElement;
-const summarizedToggle = document.getElementById('summarizedOnly') as HTMLInputElement;
-const HARD_NODE_CAP = 1500;
+const externalsToggle = document.getElementById('showExternals') as HTMLInputElement;
 
 let cy: cytoscape.Core | undefined;
-let lastNodes: IncomingNode[] = [];
-let lastEdges: IncomingEdge[] = [];
+let last: RepoGraphPayload | undefined;
 
 window.addEventListener('error', (ev) => {
   status.textContent = `script error: ${ev.message}`;
   status.classList.add('error');
 });
 
-refreshBtn.addEventListener('click', () => {
-  vscodeApi.postMessage({ type: 'refresh' });
-});
-
-search.addEventListener('input', () => {
-  if (!cy) return;
-  const q = search.value.trim().toLowerCase();
-  cy.batch(() => {
-    cy!.nodes().forEach((n) => {
-      const data = n.data();
-      const hay = `${data.label ?? ''} ${data.name ?? ''} ${data.filePath ?? ''}`.toLowerCase();
-      const hit = q.length === 0 || hay.includes(q);
-      n.style('display', hit ? 'element' : 'none');
-    });
-    cy!.edges().forEach((e) => {
-      const visible =
-        e.source().style('display') !== 'none' && e.target().style('display') !== 'none';
-      e.style('display', visible ? 'element' : 'none');
-    });
-  });
-});
-
+refreshBtn.addEventListener('click', () => vscodeApi.postMessage({ type: 'refresh' }));
+search.addEventListener('input', applyFilter);
 layoutSelect.addEventListener('change', () => runLayout());
-orphanToggle.addEventListener('change', () => renderGraph(lastNodes, lastEdges));
-summarizedToggle.addEventListener('change', () => renderGraph(lastNodes, lastEdges));
+orphanToggle.addEventListener('change', () => last && render(last));
+externalsToggle.addEventListener('change', () => last && render(last));
 
 window.addEventListener('message', (ev) => {
   const msg = ev.data as Incoming;
   if (msg.type === 'progress') {
     status.textContent = `${msg.step}: ${msg.scanned}/${msg.total}${msg.message ? ` — ${msg.message}` : ''}`;
+    status.classList.remove('error');
     return;
   }
   if (msg.type === 'error') {
@@ -96,107 +72,107 @@ window.addEventListener('message', (ev) => {
     status.classList.add('error');
     return;
   }
-  if (msg.type === 'callGraph') {
-    status.textContent = `${msg.nodes.length} symbols, ${msg.edges.length} edges, ${msg.scannedFiles} files (${msg.durationMs}ms)`;
-    lastNodes = msg.nodes;
-    lastEdges = msg.edges;
-    renderGraph(lastNodes, lastEdges);
+  if (msg.type === 'repoGraph') {
+    last = msg;
+    render(msg);
   }
 });
 
 vscodeApi.postMessage({ type: 'ready' });
 
-function renderGraph(nodes: IncomingNode[], edges: IncomingEdge[]) {
-  const summarizedOnly = summarizedToggle.checked;
+function render(g: RepoGraphPayload): void {
   const hideOrphans = orphanToggle.checked;
+  const showExternals = externalsToggle.checked;
 
-  // 1) Summarized-only: keep nodes that have a headline, plus their immediate
-  //    neighbors so the user sees context.
-  let allowed: Set<string> | undefined;
-  if (summarizedOnly) {
-    const summarized = new Set(nodes.filter((n) => !!n.headline).map((n) => n.id));
-    allowed = new Set(summarized);
-    for (const e of edges) {
-      if (summarized.has(e.source)) allowed.add(e.target);
-      if (summarized.has(e.target)) allowed.add(e.source);
-    }
+  const connected = new Set<string>();
+  for (const e of g.edges) {
+    connected.add(e.source);
+    connected.add(e.target);
   }
 
-  // 2) Hide unconnected (orphans).
-  let pool = allowed ? nodes.filter((n) => allowed!.has(n.id)) : nodes;
-  if (hideOrphans) {
-    const connected = new Set<string>();
-    for (const e of edges) {
-      if (allowed && (!allowed.has(e.source) || !allowed.has(e.target))) continue;
-      connected.add(e.source);
-      connected.add(e.target);
-    }
-    pool = pool.filter((n) => connected.has(n.id));
-  }
-
-  // 3) Hard cap so we don't try to render 60k DOM nodes. Keep nodes with the
-  //    most edges first, then summarized, then arbitrary.
-  let visibleNodes = pool;
+  let visibleFiles = hideOrphans ? g.files.filter((f) => connected.has(f.id)) : g.files;
   let capNote = '';
-  if (pool.length > HARD_NODE_CAP) {
+  if (visibleFiles.length > HARD_NODE_CAP) {
     const degree = new Map<string, number>();
-    for (const e of edges) {
+    for (const e of g.edges) {
       degree.set(e.source, (degree.get(e.source) ?? 0) + 1);
       degree.set(e.target, (degree.get(e.target) ?? 0) + 1);
     }
-    const sorted = pool.slice().sort((a, b) => {
-      const da = degree.get(a.id) ?? 0;
-      const db = degree.get(b.id) ?? 0;
-      if (db !== da) return db - da;
-      const sa = a.headline ? 1 : 0;
-      const sb = b.headline ? 1 : 0;
-      return sb - sa;
-    });
-    visibleNodes = sorted.slice(0, HARD_NODE_CAP);
-    capNote = ` · capped at ${HARD_NODE_CAP} of ${pool.length}`;
+    visibleFiles = visibleFiles
+      .slice()
+      .sort((a, b) => (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0))
+      .slice(0, HARD_NODE_CAP);
+    capNote = ` · capped at ${HARD_NODE_CAP} of ${g.files.length}`;
   }
+  const visibleIds = new Set(visibleFiles.map((f) => f.id));
+  const visibleEdges = g.edges.filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target));
 
-  status.textContent = `showing ${visibleNodes.length} of ${nodes.length} symbols${capNote}`;
+  // External packages that are imported by any visible file.
+  const externalsToShow = showExternals ? g.externals.slice(0, 50) : [];
 
-  // Auto-pick a layout that won't choke. cose is O(N²) per iteration and
-  // freezes the webview past a few hundred nodes.
-  const total = visibleNodes.length;
-  const auto = layoutSelect.value === 'auto';
-  if (auto) {
-    if (total <= 150) layoutSelect.dataset.effective = 'cose';
-    else if (total <= 800) layoutSelect.dataset.effective = 'breadthfirst';
-    else layoutSelect.dataset.effective = 'grid';
-  } else {
-    layoutSelect.dataset.effective = layoutSelect.value;
-  }
+  layoutSelect.dataset.effective = pickLayout(visibleFiles.length + externalsToShow.length);
 
   const elements: ElementDefinition[] = [];
-  const fileGroups = new Set<string>();
-  for (const n of visibleNodes) fileGroups.add(n.filePath);
-  for (const f of fileGroups) {
-    elements.push({ data: { id: `file:${f}`, label: f, filePath: f }, classes: 'file-group' });
-  }
-  const visibleIds = new Set(visibleNodes.map((n) => n.id));
-  for (const n of visibleNodes) {
+
+  // Folder compound nodes.
+  const folders = new Set<string>();
+  for (const f of visibleFiles) folders.add(folderId(f.folder));
+  for (const folder of folders) {
     elements.push({
-      data: {
-        id: n.id,
-        label: n.headline ?? n.name,
-        name: n.name,
-        kind: n.kind,
-        uri: n.uri,
-        filePath: n.filePath,
-        signature: n.signature ?? '',
-        hasSummary: n.headline ? 'yes' : 'no',
-        parent: `file:${n.filePath}`,
-      },
-      classes: n.headline ? 'has-summary' : 'no-summary',
+      data: { id: folder, label: folder.replace(/^folder:/, ''), kind: 'folder' },
+      classes: 'folder-group',
     });
   }
-  for (const e of edges) {
-    if (!visibleIds.has(e.source) || !visibleIds.has(e.target)) continue;
+  if (externalsToShow.length > 0) {
+    elements.push({ data: { id: 'folder:external', label: 'external', kind: 'folder' }, classes: 'folder-group' });
+  }
+
+  for (const f of visibleFiles) {
     elements.push({
-      data: { id: `${e.source}->${e.target}`, source: e.source, target: e.target, count: e.count },
+      data: {
+        id: f.id,
+        label: f.fileSummaryHeadline ?? f.basename,
+        basename: f.basename,
+        folder: f.folder,
+        path: f.id,
+        uri: f.uri,
+        language: f.language,
+        symbolCount: f.symbolCount,
+        loc: f.loc,
+        fileSummary: f.fileSummaryHeadline ?? '',
+        kind: 'file',
+        weight: f.symbolCount,
+        parent: folderId(f.folder),
+      },
+      classes: f.fileSummaryHeadline ? 'has-summary file' : 'no-summary file',
+    });
+  }
+
+  for (const ext of externalsToShow) {
+    elements.push({
+      data: {
+        id: `ext:${ext.id}`,
+        label: ext.id,
+        kind: 'external',
+        usage: ext.usageCount,
+        weight: Math.max(1, Math.min(20, Math.ceil(Math.log2(ext.usageCount + 1)))),
+        parent: 'folder:external',
+      },
+      classes: 'external',
+    });
+    // Edges from each importing file to the external are not separately tracked
+    // in the current indexer payload, so we skip drawing them. The external
+    // appears as a satellite node sized by usage.
+  }
+
+  for (const e of visibleEdges) {
+    elements.push({
+      data: {
+        id: `${e.source}->${e.target}`,
+        source: e.source,
+        target: e.target,
+        weight: e.importCount,
+      },
     });
   }
 
@@ -207,42 +183,55 @@ function renderGraph(nodes: IncomingNode[], edges: IncomingEdge[]) {
     wheelSensitivity: 0.25,
     style: [
       {
-        selector: 'node',
+        selector: 'node[kind = "file"]',
         style: {
           label: 'data(label)',
           'font-size': '11px',
           'text-wrap': 'wrap',
-          'text-max-width': '200px',
+          'text-max-width': '180px',
           'text-valign': 'center',
           'text-halign': 'center',
-          'background-color': 'var(--bg-node, #2563eb)',
-          color: 'var(--fg-node, #fff)',
+          'background-color': 'var(--node-default)',
+          color: 'var(--node-fg)',
           'border-width': 1,
-          'border-color': 'var(--border-node, #1e40af)',
-          width: 'label',
-          height: 'label',
-          padding: '8px',
+          'border-color': 'var(--node-border)',
+          width: 'mapData(weight, 0, 30, 60, 200)',
+          height: 'mapData(weight, 0, 30, 28, 70)',
+          padding: '6px',
           shape: 'round-rectangle',
         },
       },
       {
+        selector: 'node.has-summary',
+        style: { 'background-color': 'var(--node-summary)' },
+      },
+      {
         selector: 'node.no-summary',
+        style: { 'background-color': 'var(--node-default)' },
+      },
+      {
+        selector: 'node.external',
         style: {
-          'background-color': 'var(--bg-node-empty, #475569)',
-          'font-style': 'italic',
+          label: 'data(label)',
+          'font-size': '10px',
+          'background-color': 'var(--node-external)',
+          color: 'var(--node-fg)',
+          shape: 'ellipse',
+          width: 'mapData(weight, 0, 20, 24, 60)',
+          height: 'mapData(weight, 0, 20, 24, 60)',
         },
       },
       {
-        selector: 'node.file-group',
+        selector: 'node.folder-group',
         style: {
-          'background-color': 'var(--bg-group, rgba(100,116,139,0.08))',
-          'border-color': 'var(--border-group, #475569)',
+          'background-color': 'var(--group-bg)',
+          'border-color': 'var(--group-border)',
           'border-width': 1,
           'text-valign': 'top',
           'text-halign': 'center',
           'font-size': '10px',
           'font-weight': 'bold',
-          color: 'var(--fg-group, #94a3b8)',
+          color: 'var(--group-fg)',
           shape: 'round-rectangle',
           padding: '12px',
         },
@@ -252,72 +241,105 @@ function renderGraph(nodes: IncomingNode[], edges: IncomingEdge[]) {
         style: {
           'curve-style': 'bezier',
           'target-arrow-shape': 'triangle',
-          width: 1.5,
-          'line-color': 'var(--edge, #64748b)',
-          'target-arrow-color': 'var(--edge, #64748b)',
+          width: 'mapData(weight, 1, 10, 1, 4)',
+          'line-color': 'var(--edge)',
+          'target-arrow-color': 'var(--edge)',
           'arrow-scale': 0.8,
         },
       },
       {
         selector: 'node:selected',
-        style: { 'border-color': 'var(--selected, #f59e0b)', 'border-width': 3 },
+        style: { 'border-color': 'var(--selected)', 'border-width': 3 },
       },
     ],
   });
 
   cy.on('tap', 'node', (evt) => {
     const node = evt.target;
-    if (node.hasClass('file-group')) return;
+    if (node.hasClass('folder-group')) return;
     const data = node.data();
-    detail.innerHTML = `<strong>${escapeHtml(data.label)}</strong><div class="meta">${escapeHtml(data.filePath)} · ${escapeHtml(data.name)}</div>${data.signature ? `<pre>${escapeHtml(data.signature)}</pre>` : ''}`;
-    vscodeApi.postMessage({ type: 'open', uri: data.uri, pathKey: data.id });
+    showDetail(data);
+    if (data.kind === 'file' && data.uri) {
+      vscodeApi.postMessage({ type: 'open', uri: data.uri });
+    }
   });
-
   cy.on('mouseover', 'node', (evt) => {
     const node = evt.target;
-    if (node.hasClass('file-group')) return;
-    const data = node.data();
-    detail.innerHTML = `<strong>${escapeHtml(data.label)}</strong><div class="meta">${escapeHtml(data.filePath)} · ${escapeHtml(data.name)}</div>${data.signature ? `<pre>${escapeHtml(data.signature)}</pre>` : ''}`;
+    if (node.hasClass('folder-group')) return;
+    showDetail(node.data());
   });
 
+  applyFilter();
   runLayout();
+
+  status.textContent = `${visibleFiles.length} of ${g.files.length} files · ${visibleEdges.length} imports · ${g.scannedFiles} scanned · ${g.durationMs}ms${capNote}`;
+  status.classList.remove('error');
 }
 
-function runLayout() {
+function showDetail(d: Record<string, unknown>): void {
+  if (d.kind === 'external') {
+    detail.innerHTML = `<strong>${escapeHtml(String(d.label))}</strong><div class="meta">external package · used ${d.usage} time(s)</div>`;
+    return;
+  }
+  detail.innerHTML = `<strong>${escapeHtml(String(d.label))}</strong>
+  <div class="meta">${escapeHtml(String(d.path ?? ''))}</div>
+  <div class="meta">${escapeHtml(String(d.language ?? ''))} · ${d.symbolCount} symbols · ${d.loc} lines</div>
+  ${d.fileSummary ? `<pre>${escapeHtml(String(d.fileSummary))}</pre>` : ''}
+  <div class="meta">click to open</div>`;
+}
+
+function applyFilter(): void {
+  if (!cy) return;
+  const q = search.value.trim().toLowerCase();
+  cy.batch(() => {
+    cy!.nodes().forEach((n) => {
+      if (n.hasClass('folder-group')) {
+        n.style('display', 'element');
+        return;
+      }
+      const data = n.data();
+      const hay = `${data.label ?? ''} ${data.path ?? ''} ${data.fileSummary ?? ''}`.toLowerCase();
+      n.style('display', q.length === 0 || hay.includes(q) ? 'element' : 'none');
+    });
+    cy!.edges().forEach((e) => {
+      const visible =
+        e.source().style('display') !== 'none' && e.target().style('display') !== 'none';
+      e.style('display', visible ? 'element' : 'none');
+    });
+  });
+}
+
+function pickLayout(count: number): string {
+  if (layoutSelect.value !== 'auto') return layoutSelect.value;
+  if (count <= 150) return 'cose';
+  if (count <= 600) return 'breadthfirst';
+  return 'grid';
+}
+
+function runLayout(): void {
   if (!cy) return;
   const effective = (layoutSelect.dataset.effective || layoutSelect.value) as
-    | 'cose'
-    | 'breadthfirst'
-    | 'circle'
-    | 'grid';
+    | 'cose' | 'breadthfirst' | 'circle' | 'grid';
   const total = cy.nodes().length;
-  const base = { name: effective, animate: false, fit: true, padding: 20 };
-  let opts: Record<string, unknown>;
+  const base: Record<string, unknown> = { name: effective, animate: false, fit: true, padding: 20 };
   if (effective === 'cose') {
-    opts = {
-      ...base,
-      // Cap iterations so it never wedges on borderline-large graphs.
-      numIter: Math.min(800, Math.max(100, Math.floor(20000 / Math.max(1, total)))),
-      nodeRepulsion: 4000,
-      idealEdgeLength: 80,
-      gravity: 0.25,
-    };
-  } else {
-    opts = base;
+    base.numIter = Math.min(800, Math.max(100, Math.floor(20000 / Math.max(1, total))));
+    base.nodeRepulsion = 4000;
+    base.idealEdgeLength = 80;
+    base.gravity = 0.25;
   }
   try {
-    cy.layout(opts as unknown as cytoscape.LayoutOptions).run();
+    cy.layout(base as unknown as cytoscape.LayoutOptions).run();
   } catch (err) {
     status.textContent = `layout error: ${(err as Error).message}; falling back to grid`;
     cy.layout({ name: 'grid', fit: true, padding: 20 } as unknown as cytoscape.LayoutOptions).run();
   }
 }
 
+function folderId(folder: string): string {
+  return `folder:${folder || '.'}`;
+}
+
 function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }

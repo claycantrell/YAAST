@@ -70,7 +70,7 @@
       },
       {
         "command": "semanticFoldMode.openCallGraph",
-        "title": "YAAST: Open Call Graph"
+        "title": "YAAST: Open Repo Graph"
       }
     ],
     "configurationDefaults": {
