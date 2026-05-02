@@ -10,6 +10,14 @@ export const SummarySchema = z.object({
   confidence: z.enum(['low', 'medium', 'high']),
 });
 
+export const BatchSummarySchema = z.object({
+  summaries: z.array(
+    SummarySchema.extend({
+      id: z.string(),
+    }),
+  ),
+});
+
 export const SYSTEM_PROMPT = `You summarize a single code symbol for an IDE drawer UI.
 
 Return a single JSON object that conforms exactly to the supplied schema.
@@ -26,6 +34,52 @@ Field guidance:
 - "confidence" is "low" | "medium" | "high".
 - Do not repeat the symbol name in "headline" unless it improves clarity.
 - If evidence is insufficient, use empty arrays and lower confidence.`;
+
+export const BATCH_SYSTEM_PROMPT = `You summarize a batch of code symbols for an IDE drawer UI.
+
+Return a single JSON object {summaries: [...]} where each entry includes the same "id"
+that was provided for that symbol in the input.
+
+For every symbol, follow the same field guidance as a single-symbol summary:
+- "headline" reads like a compact virtual header (<= 72 chars, no trailing period).
+- "purpose" is one short sentence (<= 120 chars).
+- "methods_used" lists direct callees, helpers, or APIs visible in the code (max 6).
+- "techniques" describes implementation patterns, not generic fluff (max 5).
+- "risks" mentions caveats only if supported by the code (max 3).
+- "confidence" is "low" | "medium" | "high".
+- Do not repeat the symbol name in "headline" unless it improves clarity.
+- If evidence is insufficient for any symbol, use empty arrays and lower confidence.
+
+Cover every "id" in the input. Do not invent ids that weren't provided.`;
+
+export interface BatchItem extends SummaryRequest {
+  id: string;
+}
+
+export function buildBatchUserMessage(items: BatchItem[]): string {
+  const lines = [
+    `Summarize the following ${items.length} code symbol${items.length === 1 ? '' : 's'}.`,
+    '',
+    'Each symbol below begins with --- BEGIN <id> --- and ends with --- END <id> ---.',
+    'In your response, every "id" string in "summaries" must exactly match one of these ids.',
+    '',
+  ];
+  for (const item of items) {
+    lines.push(`--- BEGIN ${item.id} ---`);
+    lines.push(`language: ${item.languageId}`);
+    lines.push(`symbol_kind: ${item.symbolKind}`);
+    lines.push(`symbol_path: ${JSON.stringify(item.symbolPath)}`);
+    lines.push(`signature: ${item.signature}`);
+    if (item.containerSignature) lines.push(`container_signature: ${item.containerSignature}`);
+    if (item.staticCalls?.length) lines.push(`static_calls: ${JSON.stringify(item.staticCalls)}`);
+    lines.push(`truncated: ${item.truncated}`);
+    lines.push('code:');
+    lines.push(item.codeSlice);
+    lines.push(`--- END ${item.id} ---`);
+    lines.push('');
+  }
+  return lines.join('\n');
+}
 
 export function buildUserMessage(req: SummaryRequest): string {
   const lines = [

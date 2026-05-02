@@ -21,8 +21,21 @@ export interface SummaryRequest {
   codeSlice: string;
 }
 
+export interface BatchSummaryItem extends SummaryRequest {
+  id: string;
+}
+
+export interface BatchSummaryResult {
+  id: string;
+  summary: SummaryJson;
+}
+
 export interface SummaryProvider {
   readonly id: string;
   isAvailable(): Promise<boolean>;
   summarize(req: SummaryRequest, token: vscode.CancellationToken): Promise<SummaryJson>;
+  summarizeBatch?(
+    items: BatchSummaryItem[],
+    token: vscode.CancellationToken,
+  ): Promise<BatchSummaryResult[]>;
 }

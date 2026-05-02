@@ -55,6 +55,34 @@ class RegenerateCodeLensProvider implements vscode.CodeLensProvider {
     if (!editor || !enabled) return [];
     const targets = targetsByEditor.get(editor) ?? [];
     const lenses: vscode.CodeLens[] = [];
+
+    // Top-of-file aggregate lens: only show if at least one target needs work.
+    let missing = 0;
+    let stale = 0;
+    for (const t of targets) {
+      const lookup = lookupSummary(doc, t);
+      if (!lookup) missing++;
+      else if (lookup.stale) stale++;
+    }
+    if (missing + stale > 0 && doc.lineCount > 0) {
+      const headerRange = new vscode.Range(0, 0, 0, 0);
+      let headerTitle: string;
+      if (missing > 0 && stale === 0) {
+        headerTitle = `$(sparkle) Semantic Fold: generate summaries for this file (${missing})`;
+      } else if (stale > 0 && missing === 0) {
+        headerTitle = `$(refresh) Semantic Fold: regenerate ${stale} out-of-date summar${stale === 1 ? 'y' : 'ies'}`;
+      } else {
+        headerTitle = `$(sparkle) Semantic Fold: generate ${missing} new + regenerate ${stale} out-of-date`;
+      }
+      lenses.push(
+        new vscode.CodeLens(headerRange, {
+          title: headerTitle,
+          command: 'semanticFoldMode.generateForFile',
+          arguments: [doc.uri.toString()],
+        }),
+      );
+    }
+
     for (const t of targets) {
       const lookup = lookupSummary(doc, t);
       const id = identityFor(doc, t);
@@ -142,18 +170,21 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('semanticFoldMode.regeneratePage', async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) return;
-      const targets = targetsByEditor.get(editor) ?? [];
-      const stale = targets.filter((t) => {
-        const lookup = lookupSummary(editor.document, t);
-        return !lookup || lookup.stale;
-      });
-      if (stale.length === 0) {
-        vscode.window.showInformationMessage('No out-of-date summaries on this page.');
-        return;
-      }
-      output.appendLine(`[regeneratePage] queueing ${stale.length} target(s)`);
-      for (const t of stale) enqueueSummary(editor, t, false);
+      await generateForFile(editor, { onlyStale: true });
     }),
+    vscode.commands.registerCommand(
+      'semanticFoldMode.generateForFile',
+      async (uriStr?: string) => {
+        let editor = vscode.window.activeTextEditor;
+        if (uriStr) {
+          editor = vscode.window.visibleTextEditors.find(
+            (e) => e.document.uri.toString() === uriStr,
+          );
+        }
+        if (!editor) return;
+        await generateForFile(editor, { onlyStale: false });
+      },
+    ),
     vscode.commands.registerCommand('semanticFoldMode.promoteToComment', async () => {
       output.appendLine('[command] promoteToComment (stub)');
     }),
@@ -256,15 +287,8 @@ async function refreshEditor(editor: vscode.TextEditor) {
       await foldDrawers(editor);
     }
 
-    // Auto-generate ONLY for targets that have never been summarized before.
-    // Stale targets (edited since last summary) are NOT auto-regenerated; the
-    // user must click the inline CodeLens or run "Regenerate Page".
-    for (const t of targets) {
-      const id = identityFor(editor.document, t);
-      if (cache.getByCacheKey(id.cacheKey)) continue; // already fresh
-      if (cache.getByPathKey(t.pathKey)) continue; // stale, await user
-      enqueueSummary(editor, t, false);
-    }
+    // No auto-generation. The user explicitly clicks the top-of-file CodeLens
+    // ("Generate summaries for this file") or per-symbol CodeLens to summarize.
   } catch (err) {
     output.appendLine(`[refresh error] ${(err as Error).message}`);
   }
@@ -411,6 +435,161 @@ function enqueueSummary(editor: vscode.TextEditor, target: DrawerTarget, force: 
       lensProvider?.refresh();
     }
   });
+}
+
+async function generateForFile(
+  editor: vscode.TextEditor,
+  opts: { onlyStale: boolean },
+): Promise<void> {
+  const provider = registry.active();
+  if (!(await provider.isAvailable())) {
+    vscode.window.showWarningMessage(
+      'Semantic Fold Mode: provider is not configured. Set your Anthropic API key first.',
+    );
+    return;
+  }
+
+  const targets = targetsByEditor.get(editor) ?? [];
+  const eligible: DrawerTarget[] = [];
+  for (const t of targets) {
+    const lookup = lookupSummary(editor.document, t);
+    if (opts.onlyStale) {
+      if (!lookup || lookup.stale) eligible.push(t);
+    } else {
+      if (!lookup || lookup.stale) eligible.push(t);
+    }
+  }
+  if (eligible.length === 0) {
+    vscode.window.showInformationMessage('Semantic Fold Mode: nothing to generate on this file.');
+    return;
+  }
+
+  const cfg = vscode.workspace.getConfiguration('semanticFoldMode');
+  const batchSize = Math.max(1, cfg.get<number>('cloud.batchSize', 30));
+  const maxChars = Math.max(2000, cfg.get<number>('cloud.maxBatchInputChars', 60000));
+
+  if (typeof provider.summarizeBatch !== 'function') {
+    output.appendLine('[generateForFile] provider does not support batching, falling back to per-symbol queue');
+    for (const t of eligible) enqueueSummary(editor, t, false);
+    return;
+  }
+
+  const batches = batchTargets(editor.document, eligible, batchSize, maxChars);
+  output.appendLine(
+    `[generateForFile] ${eligible.length} target(s) → ${batches.length} batch(es) (cap ${batchSize}/${maxChars}ch)`,
+  );
+
+  // Mark all as pending up-front so the UI shows progress immediately.
+  const pendingKeys: string[] = [];
+  for (const t of eligible) {
+    const id = identityFor(editor.document, t);
+    if (!pendingByCacheKey.has(id.cacheKey)) {
+      pendingByCacheKey.add(id.cacheKey);
+      pendingKeys.push(id.cacheKey);
+    }
+  }
+  lensProvider?.refresh();
+
+  for (const batch of batches) {
+    summaryQueue.add(() => runBatch(editor, batch));
+  }
+}
+
+interface PreparedBatchItem {
+  target: DrawerTarget;
+  cacheKey: string;
+  semanticHash: string;
+  sourceHash: string;
+  request: import('./providers/types').BatchSummaryItem;
+}
+
+function batchTargets(
+  doc: vscode.TextDocument,
+  targets: DrawerTarget[],
+  batchSize: number,
+  maxChars: number,
+): PreparedBatchItem[][] {
+  const batches: PreparedBatchItem[][] = [];
+  let current: PreparedBatchItem[] = [];
+  let currentChars = 0;
+
+  targets.forEach((target, index) => {
+    const id = identityFor(doc, target);
+    const slice = doc.getText(target.fullRange);
+    const signature = firstNonEmptyLine(slice);
+    const item: PreparedBatchItem = {
+      target,
+      cacheKey: id.cacheKey,
+      semanticHash: id.semanticHash,
+      sourceHash: id.sourceHash,
+      request: {
+        id: String(index),
+        languageId: doc.languageId,
+        symbolKind: vscode.SymbolKind[target.kind],
+        symbolPath: target.symbolPath,
+        signature,
+        truncated: false,
+        codeSlice: slice,
+      },
+    };
+    const itemChars = slice.length + 200; // signature + metadata overhead
+    if (current.length >= batchSize || (current.length > 0 && currentChars + itemChars > maxChars)) {
+      batches.push(current);
+      current = [];
+      currentChars = 0;
+    }
+    current.push(item);
+    currentChars += itemChars;
+  });
+  if (current.length > 0) batches.push(current);
+  return batches;
+}
+
+async function runBatch(editor: vscode.TextEditor, batch: PreparedBatchItem[]): Promise<void> {
+  const provider = registry.active();
+  if (!provider.summarizeBatch) return;
+  const tokenSource = new vscode.CancellationTokenSource();
+  const start = Date.now();
+  try {
+    const results = await provider.summarizeBatch(
+      batch.map((b) => b.request),
+      tokenSource.token,
+    );
+    const latency = Date.now() - start;
+    const byId = new Map(results.map((r) => [r.id, r.summary]));
+    let stored = 0;
+    for (const item of batch) {
+      const summary = byId.get(item.request.id);
+      if (!summary) continue;
+      stored++;
+      await cache.set({
+        cacheKey: item.cacheKey,
+        pathKey: item.target.pathKey,
+        targetId: item.target.id,
+        semanticHash: item.semanticHash,
+        sourceHash: item.sourceHash,
+        promptVersion: PROMPT_VERSION,
+        schemaVersion: SCHEMA_VERSION,
+        providerId: provider.id,
+        summary,
+        generatedAt: new Date().toISOString(),
+        latencyMs: latency,
+      });
+    }
+    output.appendLine(`[batch] stored ${stored}/${batch.length} summaries`);
+    if (stored < batch.length) {
+      const missing = batch.filter((b) => !byId.has(b.request.id)).map((b) => b.target.symbolPath.join('.'));
+      output.appendLine(`[batch] missing ids in response: ${missing.join(', ')}`);
+    }
+    renderHeaders(editor);
+  } catch (err) {
+    output.appendLine(`[batch error] ${(err as Error).message}`);
+    vscode.window.showErrorMessage(`Semantic Fold Mode: batch summarize failed — ${(err as Error).message}`);
+  } finally {
+    tokenSource.dispose();
+    for (const item of batch) pendingByCacheKey.delete(item.cacheKey);
+    lensProvider?.refresh();
+  }
 }
 
 function firstNonEmptyLine(text: string): string {

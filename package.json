@@ -41,6 +41,10 @@
         "title": "Semantic Fold Mode: Regenerate Out-of-Date Summaries on This Page"
       },
       {
+        "command": "semanticFoldMode.generateForFile",
+        "title": "Semantic Fold Mode: Generate Summaries for This File"
+      },
+      {
         "command": "semanticFoldMode.promoteToComment",
         "title": "Semantic Fold Mode: Promote Summary to Doc Comment"
       },
@@ -99,6 +103,16 @@
           "type": "number",
           "default": 3,
           "description": "Max in-flight summarization requests."
+        },
+        "semanticFoldMode.cloud.batchSize": {
+          "type": "number",
+          "default": 30,
+          "description": "Max symbols per batched API call when generating summaries for a whole file."
+        },
+        "semanticFoldMode.cloud.maxBatchInputChars": {
+          "type": "number",
+          "default": 60000,
+          "description": "Approximate character budget per batch (≈ 4 chars per token). If a batch would exceed this, it splits into multiple calls."
         },
         "semanticFoldMode.allowRemoteInTrustedOnly": {
           "type": "boolean",
