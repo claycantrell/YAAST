@@ -65,6 +65,9 @@
         "title": "Semantic Fold Mode: Set Anthropic API Key"
       }
     ],
+    "configurationDefaults": {
+      "editor.codeLensFontSize": 14
+    },
     "configuration": {
       "title": "Semantic Fold Mode",
       "properties": {
