@@ -2,15 +2,44 @@ import * as vscode from 'vscode';
 import { collectDrawerTargets, type DrawerTarget } from './extraction/symbols';
 import { applyVirtualHeaders, headerDecorationType } from './rendering/decorations';
 import { SummaryProviderRegistry } from './providers/registry';
+import type { SummaryJson } from './providers/types';
 import { SummaryCache } from './cache/summaryCache';
+import { CloudProvider } from './providers/cloud';
+
+const PROMPT_VERSION = 'v1';
+const SCHEMA_VERSION = 'v1';
 
 let output: vscode.OutputChannel;
 let statusBar: vscode.StatusBarItem;
-let _registry: SummaryProviderRegistry;
+let registry: SummaryProviderRegistry;
 let cache: SummaryCache;
 let enabled = true;
 const targetsByEditor = new WeakMap<vscode.TextEditor, DrawerTarget[]>();
+const summaryByCacheKey = new Map<string, SummaryJson>();
+const pendingByCacheKey = new Set<string>();
 const autoFoldedDocs = new WeakSet<vscode.TextDocument>();
+
+class TaskQueue {
+  private queue: Array<() => Promise<void>> = [];
+  private running = 0;
+  constructor(private readonly maxConcurrent: number) {}
+  add(task: () => Promise<void>): void {
+    this.queue.push(task);
+    this.run();
+  }
+  private run(): void {
+    while (this.running < this.maxConcurrent && this.queue.length > 0) {
+      const task = this.queue.shift()!;
+      this.running++;
+      task().finally(() => {
+        this.running--;
+        this.run();
+      });
+    }
+  }
+}
+
+let summaryQueue: TaskQueue;
 
 export async function activate(context: vscode.ExtensionContext) {
   output = vscode.window.createOutputChannel('Semantic Fold Mode');
@@ -21,11 +50,12 @@ export async function activate(context: vscode.ExtensionContext) {
   statusBar.command = 'semanticFoldMode.toggle';
   context.subscriptions.push(statusBar);
 
-  _registry = new SummaryProviderRegistry(context, output);
+  registry = new SummaryProviderRegistry(context, output);
   cache = new SummaryCache(context);
-  void _registry;
 
-  enabled = vscode.workspace.getConfiguration('semanticFoldMode').get('enabled', true);
+  const cfg = vscode.workspace.getConfiguration('semanticFoldMode');
+  enabled = cfg.get('enabled', true);
+  summaryQueue = new TaskQueue(cfg.get<number>('concurrency', 3));
   updateStatusBar(0);
 
   context.subscriptions.push(
@@ -36,14 +66,27 @@ export async function activate(context: vscode.ExtensionContext) {
       await refreshAllVisibleEditors();
     }),
     vscode.commands.registerCommand('semanticFoldMode.regenerate', async () => {
-      output.appendLine('[command] regenerate (stub)');
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) return;
+      const targets = targetsByEditor.get(editor) ?? [];
+      const cursorLine = editor.selection.active.line;
+      const target =
+        targets.find(
+          (t) => t.fullRange.start.line <= cursorLine && t.fullRange.end.line >= cursorLine,
+        ) ?? targets[0];
+      if (!target) return;
+      const id = identityFor(editor.document, target);
+      summaryByCacheKey.delete(id.cacheKey);
+      enqueueSummary(editor, target);
     }),
     vscode.commands.registerCommand('semanticFoldMode.promoteToComment', async () => {
       output.appendLine('[command] promoteToComment (stub)');
     }),
     vscode.commands.registerCommand('semanticFoldMode.clearCache', async () => {
       await cache.clear();
+      summaryByCacheKey.clear();
       vscode.window.showInformationMessage('Semantic Fold Mode: cache cleared');
+      await refreshAllVisibleEditors();
     }),
     vscode.commands.registerCommand('semanticFoldMode.foldAll', async () => {
       const editor = vscode.window.activeTextEditor;
@@ -52,6 +95,10 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('semanticFoldMode.unfoldAll', async () => {
       const editor = vscode.window.activeTextEditor;
       if (editor) await unfoldDrawers(editor);
+    }),
+    vscode.commands.registerCommand('semanticFoldMode.setApiKey', async () => {
+      await CloudProvider.setApiKey(context);
+      await refreshAllVisibleEditors();
     }),
     vscode.window.onDidChangeActiveTextEditor((ed) => {
       if (ed) refreshEditor(ed);
@@ -76,9 +123,23 @@ export async function activate(context: vscode.ExtensionContext) {
     headerDecorationType,
   );
 
-  // Initial pass — symbol providers may need a beat to register.
   setTimeout(() => refreshAllVisibleEditors(), 500);
   setTimeout(() => refreshAllVisibleEditors(), 2000);
+
+  // First-run nudge if no API key and provider is cloud.
+  setTimeout(async () => {
+    const provider = registry.active();
+    if (provider.id === 'cloud' && !(await provider.isAvailable())) {
+      const choice = await vscode.window.showInformationMessage(
+        'Semantic Fold Mode: set your Anthropic API key to enable AI summaries.',
+        'Set API Key',
+        'Dismiss',
+      );
+      if (choice === 'Set API Key') {
+        await vscode.commands.executeCommand('semanticFoldMode.setApiKey');
+      }
+    }
+  }, 2500);
 }
 
 async function refreshAllVisibleEditors() {
@@ -102,14 +163,8 @@ async function refreshEditor(editor: vscode.TextEditor) {
     output.appendLine(
       `[refresh] ${editor.document.uri.fsPath} (${editor.document.languageId}): ${targets.length}/${all.length} targets`,
     );
-    const items = targets.map((t) => ({
-      line: t.selectionRange.start.line,
-      text: deterministicHeader(t.name, t.kind),
-      hover: `**${t.name}** — ${vscode.SymbolKind[t.kind]}\n\nNo AI summary yet.`,
-    }));
-    applyVirtualHeaders(editor, items);
     targetsByEditor.set(editor, targets);
-    updateStatusBar(targets.length);
+    renderHeaders(editor);
 
     if (
       targets.length > 0 &&
@@ -119,15 +174,128 @@ async function refreshEditor(editor: vscode.TextEditor) {
       autoFoldedDocs.add(editor.document);
       await foldDrawers(editor);
     }
+
+    for (const t of targets) {
+      const id = identityFor(editor.document, t);
+      if (summaryByCacheKey.has(id.cacheKey)) continue;
+      const persisted = cache.get(id.cacheKey);
+      if (persisted) {
+        summaryByCacheKey.set(id.cacheKey, persisted.summary);
+        continue;
+      }
+      enqueueSummary(editor, t);
+    }
   } catch (err) {
     output.appendLine(`[refresh error] ${(err as Error).message}`);
   }
 }
 
+function renderHeaders(editor: vscode.TextEditor): void {
+  const targets = targetsByEditor.get(editor) ?? [];
+  const items = targets.map((t) => {
+    const summary = lookupSummary(editor.document, t);
+    return {
+      line: t.selectionRange.start.line,
+      text: summary?.headline ?? deterministicHeader(t.name, t.kind),
+      hover: buildHoverMarkdown(t, summary),
+    };
+  });
+  applyVirtualHeaders(editor, items);
+  updateStatusBar(targets.length);
+}
+
+function lookupSummary(doc: vscode.TextDocument, target: DrawerTarget): SummaryJson | undefined {
+  const id = identityFor(doc, target);
+  return summaryByCacheKey.get(id.cacheKey);
+}
+
+function identityFor(doc: vscode.TextDocument, target: DrawerTarget) {
+  const slice = doc.getText(target.fullRange);
+  const provider = registry.active();
+  return cache.identity({
+    sourceSlice: slice,
+    semanticSlice: slice,
+    providerId: provider.id,
+    promptVersion: PROMPT_VERSION,
+    schemaVersion: SCHEMA_VERSION,
+    settingsProfile: 'default',
+  });
+}
+
+function enqueueSummary(editor: vscode.TextEditor, target: DrawerTarget): void {
+  const id = identityFor(editor.document, target);
+  if (pendingByCacheKey.has(id.cacheKey)) return;
+  pendingByCacheKey.add(id.cacheKey);
+
+  summaryQueue.add(async () => {
+    const provider = registry.active();
+    if (!(await provider.isAvailable())) {
+      pendingByCacheKey.delete(id.cacheKey);
+      return;
+    }
+    const tokenSource = new vscode.CancellationTokenSource();
+    try {
+      const slice = editor.document.getText(target.fullRange);
+      const signature = firstNonEmptyLine(slice);
+      const start = Date.now();
+      const summary = await provider.summarize(
+        {
+          languageId: editor.document.languageId,
+          symbolKind: vscode.SymbolKind[target.kind],
+          symbolPath: [target.name],
+          signature,
+          truncated: false,
+          codeSlice: slice,
+        },
+        tokenSource.token,
+      );
+      const latency = Date.now() - start;
+      summaryByCacheKey.set(id.cacheKey, summary);
+      cache.set({
+        cacheKey: id.cacheKey,
+        targetId: target.id,
+        semanticHash: id.semanticHash,
+        sourceHash: id.sourceHash,
+        promptVersion: PROMPT_VERSION,
+        schemaVersion: SCHEMA_VERSION,
+        providerId: provider.id,
+        summary,
+        generatedAt: new Date().toISOString(),
+        latencyMs: latency,
+      });
+      renderHeaders(editor);
+    } catch (err) {
+      output.appendLine(`[summary error] ${target.name}: ${(err as Error).message}`);
+    } finally {
+      tokenSource.dispose();
+      pendingByCacheKey.delete(id.cacheKey);
+    }
+  });
+}
+
+function firstNonEmptyLine(text: string): string {
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed) return trimmed.slice(0, 200);
+  }
+  return '';
+}
+
+function buildHoverMarkdown(target: DrawerTarget, summary: SummaryJson | undefined): string {
+  if (!summary) {
+    return `**${target.name}** — ${vscode.SymbolKind[target.kind]}\n\n_AI summary not yet generated._`;
+  }
+  const lines = [`**${summary.headline}**`, '', summary.purpose];
+  if (summary.methods_used.length) lines.push('', `**Methods used:** ${summary.methods_used.join(', ')}`);
+  if (summary.techniques.length) lines.push(`**Techniques:** ${summary.techniques.join(', ')}`);
+  if (summary.risks.length) lines.push(`**Risks:** ${summary.risks.join(', ')}`);
+  lines.push('', `_Confidence: ${summary.confidence}_`);
+  return lines.join('\n');
+}
+
 async function foldDrawers(editor: vscode.TextEditor): Promise<void> {
   const targets = targetsByEditor.get(editor);
   if (!targets || targets.length === 0) return;
-  // editor.fold operates on the active editor; ensure this editor is active.
   if (vscode.window.activeTextEditor !== editor) {
     await vscode.window.showTextDocument(editor.document, editor.viewColumn);
   }
@@ -140,7 +308,6 @@ async function unfoldDrawers(editor: vscode.TextEditor): Promise<void> {
   if (vscode.window.activeTextEditor !== editor) {
     await vscode.window.showTextDocument(editor.document, editor.viewColumn);
   }
-  // Use the built-in unfoldAll to ensure nested ranges (e.g. methods inside a folded class) are also unfolded.
   await vscode.commands.executeCommand('editor.unfoldAll');
   output.appendLine('[fold] unfoldAll executed');
 }

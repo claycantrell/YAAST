@@ -51,6 +51,10 @@
       {
         "command": "semanticFoldMode.unfoldAll",
         "title": "Semantic Fold Mode: Unfold All Drawers"
+      },
+      {
+        "command": "semanticFoldMode.setApiKey",
+        "title": "Semantic Fold Mode: Set Anthropic API Key"
       }
     ],
     "configuration": {
@@ -69,8 +73,8 @@
         },
         "semanticFoldMode.cloud.model": {
           "type": "string",
-          "default": "gpt-4o-mini",
-          "description": "Cloud model identifier when provider = 'cloud'."
+          "default": "claude-haiku-4-5",
+          "description": "Anthropic model identifier when provider = 'cloud'. e.g. claude-haiku-4-5, claude-sonnet-4-6, claude-opus-4-7."
         },
         "semanticFoldMode.local.endpoint": {
           "type": "string",
@@ -119,6 +123,10 @@
     "lint": "eslint src --ext ts",
     "pretest": "npm run compile && npm run build",
     "test": "node out/test/runTest.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.88.0",
+    "zod": "^3.23.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

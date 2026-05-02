@@ -89,7 +89,14 @@ export async function run(): Promise<void> {
     }
 
     // 6) Verify fold/unfold commands actually change visible ranges.
-    // Unfold first to establish a clean baseline (autoFoldOnOpen may have run).
+    // Disable autoFoldOnOpen so the test isn't racing the activation timer, then
+    // unfold any leftover state from earlier auto-folding to establish a clean baseline.
+    await vscode.workspace
+      .getConfiguration('semanticFoldMode')
+      .update('autoFoldOnOpen', false, vscode.ConfigurationTarget.Global);
+    await new Promise((r) => setTimeout(r, 200));
+    await vscode.commands.executeCommand('semanticFoldMode.unfoldAll');
+    await new Promise((r) => setTimeout(r, 200));
     await vscode.commands.executeCommand('semanticFoldMode.unfoldAll');
     await new Promise((r) => setTimeout(r, 400));
     const baseline = countVisibleLines(editor);
