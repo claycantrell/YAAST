@@ -104,7 +104,8 @@
     "watch": "npm run build -- --watch",
     "compile": "tsc -p ./",
     "lint": "eslint src --ext ts",
-    "test": "vscode-test"
+    "pretest": "npm run compile && npm run build",
+    "test": "node out/test/runTest.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
