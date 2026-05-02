@@ -14,7 +14,7 @@ export async function run(): Promise<void> {
   // 1) Verify extension activates.
   // Note: --disable-extensions disables all OTHER extensions, but the development extension still loads.
   const ourExt = vscode.extensions.all.find(
-    (e) => e.id.toLowerCase().endsWith('semantic-fold-mode'),
+    (e) => e.id.toLowerCase().endsWith('yaast') || e.id.toLowerCase().endsWith('semantic-fold-mode'),
   );
   if (!ourExt) {
     failures.push(

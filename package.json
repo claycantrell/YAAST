@@ -67,6 +67,10 @@
       {
         "command": "semanticFoldMode.setApiKey",
         "title": "Semantic Fold Mode: Set Anthropic API Key"
+      },
+      {
+        "command": "semanticFoldMode.openCallGraph",
+        "title": "YAAST: Open Call Graph"
       }
     ],
     "configurationDefaults": {
@@ -142,7 +146,9 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run build",
-    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18",
+    "build": "npm run build:ext && npm run build:webview",
+    "build:ext": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18",
+    "build:webview": "esbuild src/webview/graph.ts --bundle --outfile=dist/webview-graph.js --format=iife --platform=browser --target=es2020",
     "watch": "npm run build -- --watch",
     "compile": "tsc -p ./",
     "lint": "eslint src --ext ts",
@@ -153,9 +159,11 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.88.0",
+    "cytoscape": "^3.30.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@types/cytoscape": "^3.21.0",
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.90.0",
     "@vscode/test-cli": "^0.0.10",
