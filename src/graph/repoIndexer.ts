@@ -4,7 +4,7 @@ import { collectDrawerTargets } from '../extraction/symbols';
 
 const FILE_GLOB = '**/*.{ts,tsx,js,jsx,mjs,cjs,py}';
 const EXCLUDE =
-  '{**/node_modules/**,**/dist/**,**/out/**,**/.next/**,**/.open-next/**,**/build/**,**/.venv/**,**/__pycache__/**,**/.git/**,**/.vscode-test/**,**/coverage/**,**/.turbo/**}';
+  '{**/node_modules/**,**/dist/**,**/out/**,**/.next/**,**/.open-next/**,**/build/**,**/target/**,**/.venv/**,**/venv/**,**/__pycache__/**,**/.git/**,**/.vscode-test/**,**/coverage/**,**/.turbo/**,**/.cache/**,**/.parcel-cache/**,**/.svelte-kit/**,**/.nuxt/**,**/.output/**,**/.expo/**,**/.docusaurus/**,**/.claude/**,**/playwright-report/**,**/test-results/**,**/storybook-static/**,**/.yarn/**,**/.pnpm-store/**,**/*.min.js,**/*.bundle.js,**/*.d.ts}';
 
 const JS_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
 const PY_EXTS = ['.py'];
@@ -127,7 +127,7 @@ export async function buildRepoGraph(
           fileSummaryHeadline: fileSummaryHeadlineFor(uri.toString()),
         });
 
-        const stripped = stripStringsAndComments(text, doc.languageId);
+        const stripped = stripCommentsOnly(text, doc.languageId);
         const isPython = doc.languageId === 'python' || rel.endsWith('.py');
         const importSpecs = extractImportSpecs(stripped, isPython);
 
@@ -340,9 +340,10 @@ function parseJsonWithComments(text: string): Record<string, unknown> | undefine
   }
 }
 
-function stripStringsAndComments(src: string, languageId: string): string {
-  // Reuse the same approach as the symbol-level indexer but tuned for imports:
-  // we mainly need to avoid matching `from 'foo'` inside a string.
+function stripCommentsOnly(src: string, languageId: string): string {
+  // Strips comments while preserving string contents — we need the actual path
+  // inside `from 'foo'`. False-positive imports inside string literals (rare)
+  // are acceptable for v1.
   let out = '';
   let i = 0;
   const n = src.length;
@@ -362,25 +363,6 @@ function stripStringsAndComments(src: string, languageId: string): string {
     }
     if (isPy && c === '#') {
       while (i < n && src[i] !== '\n') i++;
-      continue;
-    }
-    if (c === '"' || c === "'" || c === '`') {
-      const quote = c;
-      out += c;
-      i++;
-      while (i < n) {
-        const ch = src[i];
-        if (ch === '\\' && i + 1 < n) {
-          i += 2;
-          continue;
-        }
-        if (ch === quote) {
-          out += ch;
-          i++;
-          break;
-        }
-        i++;
-      }
       continue;
     }
     out += c;
