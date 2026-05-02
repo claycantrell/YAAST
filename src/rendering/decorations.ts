@@ -31,7 +31,8 @@ export function applyFileBanner(editor: vscode.TextEditor, banner: FileBannerIte
   }
   const firstLine = editor.document.lineAt(0);
   const col = firstLine.firstNonWhitespaceCharacterIndex;
-  const endCol = Math.max(col + 1, Math.min(col + 1, firstLine.text.length));
+  // Span the full first line so hover works anywhere on it.
+  const endCol = Math.max(col + 1, firstLine.text.length);
   const hover = new vscode.MarkdownString(banner.hover);
   hover.isTrusted = { enabledCommands: ['semanticFoldMode.regenerateFileSummary'] };
   hover.supportThemeIcons = true;
@@ -59,7 +60,10 @@ export function applyVirtualHeaders(editor: vscode.TextEditor, items: HeaderItem
     if (item.line < 0 || item.line >= editor.document.lineCount) continue;
     const line = editor.document.lineAt(item.line);
     const col = line.firstNonWhitespaceCharacterIndex;
-    const endCol = Math.max(col + 1, Math.min(col + 1, line.text.length));
+    // Hover area spans the whole signature line so the user can hover anywhere on
+    // the function declaration — not just the first non-whitespace character.
+    // The `before` text still anchors visually at the start of the line.
+    const endCol = Math.max(col + 1, line.text.length);
 
     const hover = new vscode.MarkdownString(item.hover);
     hover.isTrusted = { enabledCommands: ['semanticFoldMode.regenerateUnitAt'] };

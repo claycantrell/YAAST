@@ -14,11 +14,13 @@ async function main() {
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set');
   const model = process.env.SFM_MODEL ?? 'claude-haiku-4-5';
 
-  const filePath = path.resolve(__dirname, '../../sample/demo.ts');
+  const filePath = process.argv[2]
+    ? path.resolve(process.argv[2])
+    : path.resolve(__dirname, '../../sample/demo.ts');
   const content = fs.readFileSync(filePath, 'utf8');
 
   const client = new Anthropic({ apiKey });
-  console.log(`[smoke:file] model=${model} path=sample/demo.ts (${content.length} chars)`);
+  console.log(`[smoke:file] model=${model} path=${filePath} (${content.length} chars)`);
   const start = Date.now();
 
   const response = await client.messages.parse({
@@ -32,8 +34,8 @@ async function main() {
       {
         role: 'user',
         content: buildFileUserMessage({
-          path: 'sample/demo.ts',
-          languageId: 'typescript',
+          path: filePath,
+          languageId: filePath.endsWith('.tsx') ? 'typescriptreact' : 'typescript',
           content,
           truncated: false,
         }),
