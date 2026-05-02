@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { collectDrawerTargets } from './extraction/symbols';
+import { collectDrawerTargets, type DrawerTarget } from './extraction/symbols';
 import { applyVirtualHeaders, headerDecorationType } from './rendering/decorations';
 import { SummaryProviderRegistry } from './providers/registry';
 import { SummaryCache } from './cache/summaryCache';
@@ -9,6 +9,8 @@ let statusBar: vscode.StatusBarItem;
 let _registry: SummaryProviderRegistry;
 let cache: SummaryCache;
 let enabled = true;
+const targetsByEditor = new WeakMap<vscode.TextEditor, DrawerTarget[]>();
+const autoFoldedDocs = new WeakSet<vscode.TextDocument>();
 
 export async function activate(context: vscode.ExtensionContext) {
   output = vscode.window.createOutputChannel('Semantic Fold Mode');
@@ -42,6 +44,14 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('semanticFoldMode.clearCache', async () => {
       await cache.clear();
       vscode.window.showInformationMessage('Semantic Fold Mode: cache cleared');
+    }),
+    vscode.commands.registerCommand('semanticFoldMode.foldAll', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (editor) await foldDrawers(editor);
+    }),
+    vscode.commands.registerCommand('semanticFoldMode.unfoldAll', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (editor) await unfoldDrawers(editor);
     }),
     vscode.window.onDidChangeActiveTextEditor((ed) => {
       if (ed) refreshEditor(ed);
@@ -98,10 +108,41 @@ async function refreshEditor(editor: vscode.TextEditor) {
       hover: `**${t.name}** — ${vscode.SymbolKind[t.kind]}\n\nNo AI summary yet.`,
     }));
     applyVirtualHeaders(editor, items);
+    targetsByEditor.set(editor, targets);
     updateStatusBar(targets.length);
+
+    if (
+      targets.length > 0 &&
+      cfg.get<boolean>('autoFoldOnOpen', true) &&
+      !autoFoldedDocs.has(editor.document)
+    ) {
+      autoFoldedDocs.add(editor.document);
+      await foldDrawers(editor);
+    }
   } catch (err) {
     output.appendLine(`[refresh error] ${(err as Error).message}`);
   }
+}
+
+async function foldDrawers(editor: vscode.TextEditor): Promise<void> {
+  const targets = targetsByEditor.get(editor);
+  if (!targets || targets.length === 0) return;
+  // editor.fold operates on the active editor; ensure this editor is active.
+  if (vscode.window.activeTextEditor !== editor) {
+    await vscode.window.showTextDocument(editor.document, editor.viewColumn);
+  }
+  const selectionLines = targets.map((t) => t.fold.start);
+  await vscode.commands.executeCommand('editor.fold', { selectionLines });
+  output.appendLine(`[fold] folded ${selectionLines.length} drawers`);
+}
+
+async function unfoldDrawers(editor: vscode.TextEditor): Promise<void> {
+  if (vscode.window.activeTextEditor !== editor) {
+    await vscode.window.showTextDocument(editor.document, editor.viewColumn);
+  }
+  // Use the built-in unfoldAll to ensure nested ranges (e.g. methods inside a folded class) are also unfolded.
+  await vscode.commands.executeCommand('editor.unfoldAll');
+  output.appendLine('[fold] unfoldAll executed');
 }
 
 function deterministicHeader(name: string, kind: vscode.SymbolKind): string {

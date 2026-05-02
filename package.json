@@ -43,6 +43,14 @@
       {
         "command": "semanticFoldMode.clearCache",
         "title": "Semantic Fold Mode: Clear Summary Cache"
+      },
+      {
+        "command": "semanticFoldMode.foldAll",
+        "title": "Semantic Fold Mode: Fold All Drawers"
+      },
+      {
+        "command": "semanticFoldMode.unfoldAll",
+        "title": "Semantic Fold Mode: Unfold All Drawers"
       }
     ],
     "configuration": {
@@ -88,6 +96,11 @@
           "type": "boolean",
           "default": true,
           "description": "Block cloud/remote summarization in untrusted workspaces."
+        },
+        "semanticFoldMode.autoFoldOnOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically fold all eligible symbol drawers when a file is opened."
         },
         "semanticFoldMode.includeKinds": {
           "type": "array",

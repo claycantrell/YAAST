@@ -35,15 +35,7 @@ export async function collectDrawerTargets(doc: vscode.TextDocument): Promise<Dr
       kind: sym.kind,
       fullRange,
       selectionRange,
-      fold:
-        folds?.find(
-          (f) =>
-            f.start <= selectionRange.start.line && f.end >= fullRange.end.line - 1,
-        ) ??
-        new vscode.FoldingRange(
-          selectionRange.start.line,
-          Math.max(fullRange.end.line - 1, selectionRange.start.line),
-        ),
+      fold: pickSmallestContainingFold(folds, selectionRange, fullRange),
     };
   });
 }
@@ -76,6 +68,21 @@ function isDocumentSymbolLike(s: unknown): s is DocumentSymbolLike {
 
 function toRange(r: RangeLike): vscode.Range {
   return new vscode.Range(r.start.line, r.start.character, r.end.line, r.end.character);
+}
+
+function pickSmallestContainingFold(
+  folds: vscode.FoldingRange[] | undefined,
+  selectionRange: vscode.Range,
+  fullRange: vscode.Range,
+): vscode.FoldingRange {
+  const sel = selectionRange.start.line;
+  const end = Math.max(fullRange.end.line - 1, sel);
+  const containing = (folds ?? []).filter((f) => f.start <= sel && f.end >= sel && f.end <= end + 1);
+  if (containing.length === 0) {
+    return new vscode.FoldingRange(sel, end);
+  }
+  containing.sort((a, b) => a.end - a.start - (b.end - b.start));
+  return containing[0];
 }
 
 function flatten(list: DocumentSymbolLike[]): DocumentSymbolLike[] {

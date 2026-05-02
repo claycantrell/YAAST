@@ -79,10 +79,39 @@ export async function run(): Promise<void> {
 
     // 5) Verify the extension's command is registered.
     const cmds = await vscode.commands.getCommands(true);
-    if (!cmds.includes('semanticFoldMode.toggle')) {
-      failures.push("command 'semanticFoldMode.toggle' not registered");
-    } else {
-      log("command 'semanticFoldMode.toggle' is registered");
+    for (const c of [
+      'semanticFoldMode.toggle',
+      'semanticFoldMode.foldAll',
+      'semanticFoldMode.unfoldAll',
+    ]) {
+      if (!cmds.includes(c)) failures.push(`command '${c}' not registered`);
+      else log(`command '${c}' is registered`);
+    }
+
+    // 6) Verify fold/unfold commands actually change visible ranges.
+    // Unfold first to establish a clean baseline (autoFoldOnOpen may have run).
+    await vscode.commands.executeCommand('semanticFoldMode.unfoldAll');
+    await new Promise((r) => setTimeout(r, 400));
+    const baseline = countVisibleLines(editor);
+    log(`baseline visible lines (unfolded): ${baseline}`);
+    if (baseline < doc.lineCount) {
+      failures.push(`baseline should equal lineCount (${doc.lineCount}) but got ${baseline}`);
+    }
+
+    await vscode.commands.executeCommand('semanticFoldMode.foldAll');
+    await new Promise((r) => setTimeout(r, 400));
+    const folded = countVisibleLines(editor);
+    log(`visible lines after foldAll: ${folded}`);
+    if (folded >= baseline) {
+      failures.push(`foldAll did not reduce visible lines (baseline=${baseline} folded=${folded})`);
+    }
+
+    await vscode.commands.executeCommand('semanticFoldMode.unfoldAll');
+    await new Promise((r) => setTimeout(r, 400));
+    const reopened = countVisibleLines(editor);
+    log(`visible lines after unfoldAll: ${reopened}`);
+    if (reopened <= folded) {
+      failures.push(`unfoldAll did not restore visible lines (folded=${folded} reopened=${reopened})`);
     }
 
     // Use editor to silence unused warning.
@@ -96,6 +125,14 @@ export async function run(): Promise<void> {
   }
 
   log('ALL CHECKS PASSED');
+}
+
+function countVisibleLines(editor: vscode.TextEditor): number {
+  let total = 0;
+  for (const r of editor.visibleRanges) {
+    total += r.end.line - r.start.line + 1;
+  }
+  return total;
 }
 
 async function waitForSymbols(doc: vscode.TextDocument, timeoutMs: number) {
