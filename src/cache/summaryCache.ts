@@ -38,23 +38,48 @@ export interface CacheIdentity {
   cacheKey: string;
 }
 
+export interface ClusterRecord {
+  evidenceHash: string;
+  modelId: string;
+  promptVersion: string;
+  generatedAt: string;
+  inputTokens: number;
+  outputTokens: number;
+  latencyMs: number;
+  clusters: Array<{
+    id: string;
+    label: string;
+    description: string;
+    file_paths: string[];
+  }>;
+}
+
 export class SummaryCache {
   private readonly byCacheKey = new Map<string, SummaryRecord>();
   private readonly pathToCacheKey = new Map<string, string>();
   private readonly fileByUri = new Map<string, FileSummaryRecord>();
+  private readonly clusterByHash = new Map<string, ClusterRecord>();
   private readonly dirUri: vscode.Uri;
   private readonly fileDirUri: vscode.Uri;
+  private readonly clusterDirUri: vscode.Uri;
   private initialized = false;
 
   constructor(context: vscode.ExtensionContext) {
     this.dirUri = vscode.Uri.joinPath(context.globalStorageUri, 'summaries');
     this.fileDirUri = vscode.Uri.joinPath(context.globalStorageUri, 'file-summaries');
+    this.clusterDirUri = vscode.Uri.joinPath(context.globalStorageUri, 'clusters');
   }
 
-  async init(): Promise<{ loaded: number; filesLoaded: number }> {
-    if (this.initialized) return { loaded: this.byCacheKey.size, filesLoaded: this.fileByUri.size };
+  async init(): Promise<{ loaded: number; filesLoaded: number; clustersLoaded: number }> {
+    if (this.initialized) {
+      return {
+        loaded: this.byCacheKey.size,
+        filesLoaded: this.fileByUri.size,
+        clustersLoaded: this.clusterByHash.size,
+      };
+    }
     this.initialized = true;
-    for (const dir of [this.dirUri, this.fileDirUri]) {
+    for (const dir of [this.dirUri, this.fileDirUri, this.clusterDirUri]) {
       try {
         await vscode.workspace.fs.createDirectory(dir);
       } catch {
@@ -63,6 +88,7 @@ export class SummaryCache {
     }
     let loaded = 0;
     let filesLoaded = 0;
+    let clustersLoaded = 0;
     const decoder = new TextDecoder();
     try {
       const entries = await vscode.workspace.fs.readDirectory(this.dirUri);
@@ -99,7 +125,39 @@ export class SummaryCache {
     } catch {
       // ignore
     }
-    return { loaded, filesLoaded };
+    try {
+      const entries = await vscode.workspace.fs.readDirectory(this.clusterDirUri);
+      for (const [name, type] of entries) {
+        if (type !== vscode.FileType.File || !name.endsWith('.json')) continue;
+        try {
+          const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(this.clusterDirUri, name));
+          const record = JSON.parse(decoder.decode(bytes)) as ClusterRecord;
+          if (!record.evidenceHash || !Array.isArray(record.clusters)) continue;
+          this.clusterByHash.set(record.evidenceHash, record);
+          clustersLoaded++;
+        } catch {
+          // skip corrupt
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return { loaded, filesLoaded, clustersLoaded };
+  }
+
+  getCluster(evidenceHash: string): ClusterRecord | undefined {
+    return this.clusterByHash.get(evidenceHash);
+  }
+
+  async setCluster(record: ClusterRecord): Promise<void> {
+    this.clusterByHash.set(record.evidenceHash, record);
+    try {
+      const fileUri = vscode.Uri.joinPath(this.clusterDirUri, `${record.evidenceHash}.json`);
+      const bytes = new TextEncoder().encode(JSON.stringify(record));
+      await vscode.workspace.fs.writeFile(fileUri, bytes);
+    } catch {
+      // best-effort
+    }
   }
 
   fileIdentity(args: {
@@ -182,7 +240,8 @@ export class SummaryCache {
     this.byCacheKey.clear();
     this.pathToCacheKey.clear();
     this.fileByUri.clear();
-    for (const dir of [this.dirUri, this.fileDirUri]) {
+    this.clusterByHash.clear();
+    for (const dir of [this.dirUri, this.fileDirUri, this.clusterDirUri]) {
       try {
         await vscode.workspace.fs.delete(dir, { recursive: true });
       } catch {

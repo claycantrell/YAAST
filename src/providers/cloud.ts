@@ -146,6 +146,13 @@ export class CloudProvider implements SummaryProvider {
     return parsed as FileSummaryJson;
   }
 
+  static async resolveApiKeyForExternal(context: vscode.ExtensionContext): Promise<string | undefined> {
+    const stored = await context.secrets.get(SECRET_KEY);
+    if (stored) return stored;
+    const env = process.env.ANTHROPIC_API_KEY;
+    return env && env.length > 0 ? env : undefined;
+  }
+
   static async setApiKey(context: vscode.ExtensionContext): Promise<void> {
     const value = await vscode.window.showInputBox({
       prompt: 'Anthropic API key (sk-ant-...)',

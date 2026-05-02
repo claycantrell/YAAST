@@ -282,11 +282,13 @@ export async function activate(context: vscode.ExtensionContext) {
       await refreshAllVisibleEditors();
     }),
     vscode.commands.registerCommand('semanticFoldMode.openCallGraph', async () => {
-      CallGraphPanel.show(
+      CallGraphPanel.show({
         context,
-        (uri) => cache.getFileByUri(uri)?.summary.headline,
+        fileHeadlineFor: (uri) => cache.getFileByUri(uri)?.summary.headline,
         output,
-      );
+        cache,
+        resolveApiKey: () => CloudProvider.resolveApiKeyForExternal(context),
+      });
     }),
     vscode.window.onDidChangeActiveTextEditor((ed) => {
       if (ed) refreshEditor(ed);
