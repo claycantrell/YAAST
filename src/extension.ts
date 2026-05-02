@@ -301,17 +301,51 @@ function lookupSummary(doc: vscode.TextDocument, target: DrawerTarget): SummaryL
   return undefined;
 }
 
+const CONTAINER_KINDS = new Set<vscode.SymbolKind>([
+  vscode.SymbolKind.Class,
+  vscode.SymbolKind.Interface,
+  vscode.SymbolKind.Namespace,
+  vscode.SymbolKind.Module,
+  vscode.SymbolKind.Enum,
+  vscode.SymbolKind.Struct,
+  vscode.SymbolKind.Object,
+]);
+
 function identityFor(doc: vscode.TextDocument, target: DrawerTarget): CacheIdentity {
-  const slice = doc.getText(target.fullRange);
+  const sourceSlice = doc.getText(target.fullRange);
+  const semanticSlice = computeSemanticSlice(doc, target, sourceSlice);
   const provider = registry.active();
   return cache.identity({
-    sourceSlice: slice,
-    semanticSlice: slice,
+    sourceSlice,
+    semanticSlice,
     providerId: provider.id,
     promptVersion: PROMPT_VERSION,
     schemaVersion: SCHEMA_VERSION,
     settingsProfile: 'default',
   });
+}
+
+function computeSemanticSlice(
+  doc: vscode.TextDocument,
+  target: DrawerTarget,
+  sourceSlice: string,
+): string {
+  if (!CONTAINER_KINDS.has(target.kind) || target.directChildren.length === 0) {
+    return sourceSlice;
+  }
+  // Container hash invariant to child bodies: declaration line + each child's
+  // declaration line. Editing a method body leaves the parent class hash intact.
+  const declLine = lineSafely(doc, target.selectionRange.start.line);
+  const childLines = target.directChildren
+    .slice()
+    .sort((a, b) => a.selectionRange.start.line - b.selectionRange.start.line)
+    .map((c) => `${vscode.SymbolKind[c.kind]}::${c.name}::${lineSafely(doc, c.selectionRange.start.line)}`);
+  return [declLine, ...childLines].join('\n');
+}
+
+function lineSafely(doc: vscode.TextDocument, line: number): string {
+  if (line < 0 || line >= doc.lineCount) return '';
+  return doc.lineAt(line).text.trim();
 }
 
 function targetAtLine(editor: vscode.TextEditor, line: number): DrawerTarget | undefined {

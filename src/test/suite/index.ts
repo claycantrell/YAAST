@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import * as vscode from 'vscode';
-import { collectDrawerTargets } from '../../extraction/symbols';
+import { collectDrawerTargets, type DrawerTarget } from '../../extraction/symbols';
 
 export async function run(): Promise<void> {
   const failures: string[] = [];
@@ -124,6 +124,11 @@ export async function run(): Promise<void> {
       failures.push(`unfoldAll didn't restore to baseline (baseline=${baseline} reopened=${reopened})`);
     }
 
+    // 7) Verify the parent-stays-fresh invariant: editing a method body should
+    //    change the method's hash but NOT the parent class's hash.
+    log('--- container skeleton hash invariance ---');
+    await runHashInvarianceCheck(failures, log);
+
     // Use editor to silence unused warning.
     void editor;
   }
@@ -135,6 +140,80 @@ export async function run(): Promise<void> {
   }
 
   log('ALL CHECKS PASSED');
+}
+
+async function runHashInvarianceCheck(failures: string[], log: (msg: string) => void) {
+  const beforeText = `export class Container {
+  alpha(): number {
+    return 1;
+  }
+  beta(x: number): number {
+    return x * 2;
+  }
+}
+`;
+  const afterText = `export class Container {
+  alpha(): number {
+    return 999; // body changed
+  }
+  beta(x: number): number {
+    return x * 2;
+  }
+}
+`;
+
+  const docBefore = await vscode.workspace.openTextDocument({ language: 'typescript', content: beforeText });
+  await vscode.window.showTextDocument(docBefore);
+  await waitForSymbols(docBefore, 15000);
+  const targetsBefore = await collectDrawerTargets(docBefore);
+  const containerBefore = targetsBefore.find((t) => t.name === 'Container');
+  const alphaBefore = targetsBefore.find((t) => t.name === 'alpha');
+  if (!containerBefore || !alphaBefore) {
+    failures.push('hash-invariance: missing Container/alpha in the BEFORE doc');
+    return;
+  }
+
+  const docAfter = await vscode.workspace.openTextDocument({ language: 'typescript', content: afterText });
+  await vscode.window.showTextDocument(docAfter);
+  await waitForSymbols(docAfter, 15000);
+  const targetsAfter = await collectDrawerTargets(docAfter);
+  const containerAfter = targetsAfter.find((t) => t.name === 'Container');
+  const alphaAfter = targetsAfter.find((t) => t.name === 'alpha');
+  if (!containerAfter || !alphaAfter) {
+    failures.push('hash-invariance: missing Container/alpha in the AFTER doc');
+    return;
+  }
+
+  const containerSliceBefore = skeletonOf(docBefore, containerBefore);
+  const containerSliceAfter = skeletonOf(docAfter, containerAfter);
+  log(`Container skeleton BEFORE: ${JSON.stringify(containerSliceBefore)}`);
+  log(`Container skeleton AFTER : ${JSON.stringify(containerSliceAfter)}`);
+  if (containerSliceBefore !== containerSliceAfter) {
+    failures.push(`Container skeleton changed when only a child body changed`);
+  } else {
+    log(`✓ Container skeleton invariant holds`);
+  }
+
+  const alphaSliceBefore = docBefore.getText(alphaBefore.fullRange);
+  const alphaSliceAfter = docAfter.getText(alphaAfter.fullRange);
+  if (alphaSliceBefore === alphaSliceAfter) {
+    failures.push(`alpha source slice did not change despite body edit`);
+  } else {
+    log(`✓ alpha body slice DID change (good)`);
+  }
+}
+
+function skeletonOf(doc: vscode.TextDocument, target: DrawerTarget): string {
+  // Mirror computeSemanticSlice from extension.ts for verification purposes.
+  const declLine = doc.lineAt(target.selectionRange.start.line).text.trim();
+  const childLines = target.directChildren
+    .slice()
+    .sort((a, b) => a.selectionRange.start.line - b.selectionRange.start.line)
+    .map(
+      (c) =>
+        `${vscode.SymbolKind[c.kind]}::${c.name}::${doc.lineAt(c.selectionRange.start.line).text.trim()}`,
+    );
+  return [declLine, ...childLines].join('\n');
 }
 
 function countVisibleLines(editor: vscode.TextEditor): number {

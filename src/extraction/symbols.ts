@@ -12,6 +12,7 @@ export interface DrawerTarget {
   fullRange: vscode.Range;
   selectionRange: vscode.Range;
   fold: vscode.FoldingRange;
+  directChildren: Array<{ name: string; kind: vscode.SymbolKind; selectionRange: vscode.Range }>;
 }
 
 export async function collectDrawerTargets(doc: vscode.TextDocument): Promise<DrawerTarget[]> {
@@ -29,6 +30,11 @@ export async function collectDrawerTargets(doc: vscode.TextDocument): Promise<Dr
     const fullRange = toRange(sym.range);
     const selectionRange = toRange(sym.selectionRange);
     const uriStr = doc.uri.toString();
+    const directChildren = (sym.children ?? []).map((c) => ({
+      name: c.name,
+      kind: c.kind,
+      selectionRange: toRange(c.selectionRange),
+    }));
     return {
       id: `${uriStr}#${path.join('.')}:${selectionRange.start.line}`,
       pathKey: `${uriStr}#${path.join('.')}`,
@@ -41,6 +47,7 @@ export async function collectDrawerTargets(doc: vscode.TextDocument): Promise<Dr
       fullRange,
       selectionRange,
       fold: pickSmallestContainingFold(folds, selectionRange, fullRange),
+      directChildren,
     };
   });
 }
