@@ -45,6 +45,10 @@
         "title": "Semantic Fold Mode: Generate Summaries for This File"
       },
       {
+        "command": "semanticFoldMode.regenerateFileSummary",
+        "title": "Semantic Fold Mode: Regenerate File Summary"
+      },
+      {
         "command": "semanticFoldMode.promoteToComment",
         "title": "Semantic Fold Mode: Promote Summary to Doc Comment"
       },

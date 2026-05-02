@@ -18,6 +18,48 @@ export const BatchSummarySchema = z.object({
   ),
 });
 
+export const FileSummarySchema = z.object({
+  headline: z.string(),
+  overview: z.string(),
+  main_features: z.array(z.string()),
+});
+
+export type FileSummaryJson = z.infer<typeof FileSummarySchema>;
+
+export const FILE_SYSTEM_PROMPT = `You summarize a code file at a high level for a reader skimming it for the first time.
+
+Return a single JSON object that conforms exactly to the supplied schema.
+Base every claim only on the supplied code or outline.
+Prefer plain language: describe what the file does and what's in it, not how it's implemented in detail.
+
+Field guidance:
+- "headline" is the file's one-line elevator pitch (<= 80 chars, no trailing period).
+- "overview" is 2-4 sentences (<= 600 chars). Explain what the file is for, what it exposes, and any important context.
+- "main_features" is 3-6 short bullets naming the notable things this file provides. Each <= 80 chars.
+- Do not invent dependencies, runtime behavior, or relationships not visible in the input.
+- If the file is mostly empty or boilerplate, say so plainly and use a small main_features list.`;
+
+export interface FilePromptInput {
+  path: string;
+  languageId: string;
+  content: string;
+  truncated: boolean;
+}
+
+export function buildFileUserMessage(input: FilePromptInput): string {
+  const lines = [
+    'Summarize this code file.',
+    '',
+    `path: ${input.path}`,
+    `language: ${input.languageId}`,
+    `truncated: ${input.truncated}`,
+    '',
+    'Code:',
+    input.content,
+  ];
+  return lines.join('\n');
+}
+
 export const SYSTEM_PROMPT = `You summarize a single code symbol for an IDE drawer UI.
 
 Return a single JSON object that conforms exactly to the supplied schema.

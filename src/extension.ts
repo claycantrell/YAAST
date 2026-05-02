@@ -1,8 +1,13 @@
 import * as vscode from 'vscode';
 import { collectDrawerTargets, type DrawerTarget } from './extraction/symbols';
-import { applyVirtualHeaders, headerDecorationType } from './rendering/decorations';
+import {
+  applyFileBanner,
+  applyVirtualHeaders,
+  fileBannerDecorationType,
+  headerDecorationType,
+} from './rendering/decorations';
 import { SummaryProviderRegistry } from './providers/registry';
-import type { SummaryJson } from './providers/types';
+import type { FileSummaryJson, SummaryJson } from './providers/types';
 import { SummaryCache, type CacheIdentity } from './cache/summaryCache';
 import { CloudProvider } from './providers/cloud';
 
@@ -14,6 +19,11 @@ interface SummaryLookup {
   stale: boolean;
 }
 
+interface FileSummaryLookup {
+  summary: FileSummaryJson;
+  stale: boolean;
+}
+
 let output: vscode.OutputChannel;
 let statusBar: vscode.StatusBarItem;
 let registry: SummaryProviderRegistry;
@@ -22,6 +32,7 @@ let lensProvider: RegenerateCodeLensProvider;
 let enabled = true;
 const targetsByEditor = new WeakMap<vscode.TextEditor, DrawerTarget[]>();
 const pendingByCacheKey = new Set<string>();
+const fileSummaryPending = new Set<string>();
 const autoFoldedDocs = new WeakSet<vscode.TextDocument>();
 
 class TaskQueue {
@@ -64,16 +75,20 @@ class RegenerateCodeLensProvider implements vscode.CodeLensProvider {
       if (!lookup) missing++;
       else if (lookup.stale) stale++;
     }
-    if (missing + stale > 0 && doc.lineCount > 0) {
+    const fileLookup = lookupFileSummary(doc, targets);
+    const filePending = fileSummaryPending.has(doc.uri.toString());
+    const fileNeedsWork = !fileLookup || fileLookup.stale || filePending;
+
+    if ((missing + stale > 0 || fileNeedsWork) && doc.lineCount > 0) {
       const headerRange = new vscode.Range(0, 0, 0, 0);
-      let headerTitle: string;
-      if (missing > 0 && stale === 0) {
-        headerTitle = `$(sparkle) Semantic Fold: generate summaries for this file (${missing})`;
-      } else if (stale > 0 && missing === 0) {
-        headerTitle = `$(refresh) Semantic Fold: regenerate ${stale} out-of-date summar${stale === 1 ? 'y' : 'ies'}`;
-      } else {
-        headerTitle = `$(sparkle) Semantic Fold: generate ${missing} new + regenerate ${stale} out-of-date`;
-      }
+      const parts: string[] = [];
+      if (filePending) parts.push('generating file summary');
+      else if (!fileLookup) parts.push('file summary');
+      else if (fileLookup.stale) parts.push('1 out-of-date file summary');
+      if (missing > 0) parts.push(`${missing} new symbol summar${missing === 1 ? 'y' : 'ies'}`);
+      if (stale > 0) parts.push(`${stale} out-of-date symbol summar${stale === 1 ? 'y' : 'ies'}`);
+      const icon = stale > 0 || (fileLookup && fileLookup.stale) ? '$(refresh)' : '$(sparkle)';
+      const headerTitle = `${icon} Semantic Fold: ${parts.join(' · ')}`;
       lenses.push(
         new vscode.CodeLens(headerRange, {
           title: headerTitle,
@@ -124,13 +139,14 @@ export async function activate(context: vscode.ExtensionContext) {
 
   registry = new SummaryProviderRegistry(context, output);
   cache = new SummaryCache(context);
-  const { loaded } = await cache.init();
-  output.appendLine(`[cache] loaded ${loaded} persisted summaries`);
+  const { loaded, filesLoaded } = await cache.init();
+  output.appendLine(`[cache] loaded ${loaded} symbol summaries + ${filesLoaded} file summaries`);
 
   lensProvider = new RegenerateCodeLensProvider();
   context.subscriptions.push(
     vscode.languages.registerCodeLensProvider({ scheme: 'file' }, lensProvider),
     vscode.languages.registerCodeLensProvider({ scheme: 'untitled' }, lensProvider),
+    fileBannerDecorationType,
   );
 
   const cfg = vscode.workspace.getConfiguration('semanticFoldMode');
@@ -184,6 +200,19 @@ export async function activate(context: vscode.ExtensionContext) {
         }
         if (!editor) return;
         await generateForFile(editor, { onlyStale: false });
+      },
+    ),
+    vscode.commands.registerCommand(
+      'semanticFoldMode.regenerateFileSummary',
+      async (uriStr?: string) => {
+        let editor = vscode.window.activeTextEditor;
+        if (uriStr) {
+          editor = vscode.window.visibleTextEditors.find(
+            (e) => e.document.uri.toString() === uriStr,
+          );
+        }
+        if (!editor) return;
+        await generateFileSummary(editor, true);
       },
     ),
     vscode.commands.registerCommand('semanticFoldMode.promoteToComment', async () => {
@@ -314,7 +343,58 @@ function renderHeaders(editor: vscode.TextEditor): void {
     };
   });
   applyVirtualHeaders(editor, items);
+  renderFileBanner(editor);
   updateStatusBar(targets.length);
+}
+
+function renderFileBanner(editor: vscode.TextEditor): void {
+  const targets = targetsByEditor.get(editor) ?? [];
+  const lookup = lookupFileSummary(editor.document, targets);
+  if (!lookup) {
+    applyFileBanner(editor, undefined);
+    return;
+  }
+  const headline = lookup.stale ? `⚠ ${lookup.summary.headline}` : lookup.summary.headline;
+  applyFileBanner(editor, {
+    text: headline,
+    hover: buildFileHoverMarkdown(editor.document, lookup),
+  });
+}
+
+function fileSkeleton(doc: vscode.TextDocument, targets: DrawerTarget[]): string {
+  // Top-level symbols only (path length 1); list each plus its direct children's
+  // declaration lines. Stable across method-body edits, changes when the file's
+  // structure (top-level symbols, signatures, child layout) changes.
+  const topLevel = targets.filter((t) => t.symbolPath.length === 1);
+  const lines: string[] = [`path:${doc.uri.toString()}`, `lang:${doc.languageId}`];
+  for (const t of topLevel) {
+    lines.push(`${vscode.SymbolKind[t.kind]}::${t.name}::${lineSafely(doc, t.selectionRange.start.line)}`);
+    for (const c of t.directChildren) {
+      lines.push(`  ${vscode.SymbolKind[c.kind]}::${c.name}::${lineSafely(doc, c.selectionRange.start.line)}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+function fileIdentityFor(doc: vscode.TextDocument, targets: DrawerTarget[]) {
+  const provider = registry.active();
+  return cache.fileIdentity({
+    skeleton: fileSkeleton(doc, targets),
+    providerId: provider.id,
+    promptVersion: PROMPT_VERSION,
+    schemaVersion: SCHEMA_VERSION,
+    settingsProfile: 'default',
+  });
+}
+
+function lookupFileSummary(
+  doc: vscode.TextDocument,
+  targets: DrawerTarget[],
+): FileSummaryLookup | undefined {
+  const record = cache.getFileByUri(doc.uri.toString());
+  if (!record) return undefined;
+  const id = fileIdentityFor(doc, targets);
+  return { summary: record.summary, stale: record.skeletonHash !== id.skeletonHash };
 }
 
 function lookupSummary(doc: vscode.TextDocument, target: DrawerTarget): SummaryLookup | undefined {
@@ -440,7 +520,7 @@ function enqueueSummary(editor: vscode.TextEditor, target: DrawerTarget, force: 
 
 async function generateForFile(
   editor: vscode.TextEditor,
-  opts: { onlyStale: boolean },
+  _opts: { onlyStale: boolean },
 ): Promise<void> {
   const provider = registry.active();
   if (!(await provider.isAvailable())) {
@@ -450,19 +530,19 @@ async function generateForFile(
     return;
   }
 
+  // Always (re)check the file summary as part of "generate for file".
+  generateFileSummary(editor, false).catch((err) => {
+    output.appendLine(`[file summary] ${(err as Error).message}`);
+  });
+
   const targets = targetsByEditor.get(editor) ?? [];
   const eligible: DrawerTarget[] = [];
   for (const t of targets) {
     const lookup = lookupSummary(editor.document, t);
-    if (opts.onlyStale) {
-      if (!lookup || lookup.stale) eligible.push(t);
-    } else {
-      if (!lookup || lookup.stale) eligible.push(t);
-    }
+    if (!lookup || lookup.stale) eligible.push(t);
   }
   if (eligible.length === 0) {
-    vscode.window.showInformationMessage('Semantic Fold Mode: nothing to generate on this file.');
-    return;
+    return; // file summary may still be running; that's fine
   }
 
   const cfg = vscode.workspace.getConfiguration('semanticFoldMode');
@@ -593,12 +673,85 @@ async function runBatch(editor: vscode.TextEditor, batch: PreparedBatchItem[]): 
   }
 }
 
+async function generateFileSummary(editor: vscode.TextEditor, force: boolean): Promise<void> {
+  const provider = registry.active();
+  if (!provider.summarizeFile) return;
+  if (!(await provider.isAvailable())) return;
+
+  const doc = editor.document;
+  const uriStr = doc.uri.toString();
+  const targets = targetsByEditor.get(editor) ?? [];
+  const id = fileIdentityFor(doc, targets);
+
+  const existing = cache.getFileByUri(uriStr);
+  if (!force && existing && existing.skeletonHash === id.skeletonHash) return;
+  if (fileSummaryPending.has(uriStr)) return;
+  fileSummaryPending.add(uriStr);
+  lensProvider?.refresh();
+
+  summaryQueue.add(async () => {
+    const tokenSource = new vscode.CancellationTokenSource();
+    const start = Date.now();
+    try {
+      const cfg = vscode.workspace.getConfiguration('semanticFoldMode');
+      const maxChars = Math.max(8000, cfg.get<number>('cloud.maxBatchInputChars', 60000));
+      const fullText = doc.getText();
+      const truncated = fullText.length > maxChars;
+      const content = truncated ? fileSkeleton(doc, targets) : fullText;
+      const summary = await provider.summarizeFile!(
+        {
+          path: uriStr,
+          languageId: doc.languageId,
+          content,
+          truncated,
+        },
+        tokenSource.token,
+      );
+      const latency = Date.now() - start;
+      await cache.setFile({
+        cacheKey: id.cacheKey,
+        uri: uriStr,
+        skeletonHash: id.skeletonHash,
+        promptVersion: PROMPT_VERSION,
+        schemaVersion: SCHEMA_VERSION,
+        providerId: provider.id,
+        summary,
+        generatedAt: new Date().toISOString(),
+        latencyMs: latency,
+      });
+      output.appendLine(`[file summary] stored: ${summary.headline}`);
+      renderHeaders(editor);
+    } catch (err) {
+      output.appendLine(`[file summary error] ${(err as Error).message}`);
+    } finally {
+      tokenSource.dispose();
+      fileSummaryPending.delete(uriStr);
+      lensProvider?.refresh();
+    }
+  });
+}
+
 function firstNonEmptyLine(text: string): string {
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (trimmed) return trimmed.slice(0, 200);
   }
   return '';
+}
+
+function buildFileHoverMarkdown(doc: vscode.TextDocument, lookup: FileSummaryLookup): string {
+  const args = encodeURIComponent(JSON.stringify([doc.uri.toString()]));
+  const regenLink = `[$(refresh) Regenerate file summary](command:semanticFoldMode.regenerateFileSummary?${args} "Regenerate this file's overview")`;
+  const { summary, stale } = lookup;
+  const lines: string[] = [];
+  if (stale) lines.push('⚠ _File structure changed — overview may be out of date._', '');
+  lines.push(`**${summary.headline}**`, '', summary.overview);
+  if (summary.main_features.length) {
+    lines.push('', '**Main features:**');
+    for (const f of summary.main_features) lines.push(`- ${f}`);
+  }
+  lines.push('', regenLink);
+  return lines.join('\n');
 }
 
 function buildHoverMarkdown(target: DrawerTarget, lookup: SummaryLookup | undefined): string {

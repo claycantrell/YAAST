@@ -4,6 +4,8 @@ import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import type {
   BatchSummaryItem,
   BatchSummaryResult,
+  FileSummaryJson,
+  FileSummaryRequest,
   SummaryJson,
   SummaryProvider,
   SummaryRequest,
@@ -11,9 +13,12 @@ import type {
 import {
   BATCH_SYSTEM_PROMPT,
   BatchSummarySchema,
+  FILE_SYSTEM_PROMPT,
+  FileSummarySchema,
   SummarySchema,
   SYSTEM_PROMPT,
   buildBatchUserMessage,
+  buildFileUserMessage,
   buildUserMessage,
 } from './prompt';
 
@@ -108,6 +113,37 @@ export class CloudProvider implements SummaryProvider {
       results.push({ id, summary: rest as SummaryJson });
     }
     return results;
+  }
+
+  async summarizeFile(
+    req: FileSummaryRequest,
+    _token: vscode.CancellationToken,
+  ): Promise<FileSummaryJson> {
+    const apiKey = await this.resolveApiKey();
+    if (!apiKey) throw new Error('No Anthropic API key set.');
+    const cfg = vscode.workspace.getConfiguration('semanticFoldMode');
+    const model = cfg.get<string>('cloud.model', 'claude-haiku-4-5');
+    const client = new Anthropic({ apiKey });
+    const start = Date.now();
+
+    const response = await client.messages.parse({
+      model,
+      max_tokens: 1024,
+      system: [
+        { type: 'text', text: FILE_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+      ],
+      output_config: { format: zodOutputFormat(FileSummarySchema) },
+      messages: [{ role: 'user', content: buildFileUserMessage(req) }],
+    });
+
+    const elapsed = Date.now() - start;
+    const usage = response.usage;
+    this.output.appendLine(
+      `[cloud:file] ${req.path} ${elapsed}ms in=${usage.input_tokens} out=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens ?? 0}`,
+    );
+    const parsed = response.parsed_output;
+    if (!parsed) throw new Error('Anthropic file response did not parse against the schema');
+    return parsed as FileSummaryJson;
   }
 
   static async setApiKey(context: vscode.ExtensionContext): Promise<void> {

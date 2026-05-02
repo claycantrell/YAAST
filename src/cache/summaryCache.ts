@@ -1,6 +1,19 @@
 import * as vscode from 'vscode';
 import { createHash } from 'node:crypto';
-import type { SummaryJson } from '../providers/types';
+import type { FileSummaryJson, SummaryJson } from '../providers/types';
+
+export interface FileSummaryRecord {
+  cacheKey: string;
+  uri: string;
+  skeletonHash: string;
+  promptVersion: string;
+  schemaVersion: string;
+  providerId: string;
+  modelId?: string;
+  summary: FileSummaryJson;
+  generatedAt: string;
+  latencyMs: number;
+}
 
 export interface SummaryRecord {
   cacheKey: string;
@@ -28,32 +41,35 @@ export interface CacheIdentity {
 export class SummaryCache {
   private readonly byCacheKey = new Map<string, SummaryRecord>();
   private readonly pathToCacheKey = new Map<string, string>();
+  private readonly fileByUri = new Map<string, FileSummaryRecord>();
   private readonly dirUri: vscode.Uri;
+  private readonly fileDirUri: vscode.Uri;
   private initialized = false;
 
   constructor(context: vscode.ExtensionContext) {
     this.dirUri = vscode.Uri.joinPath(context.globalStorageUri, 'summaries');
+    this.fileDirUri = vscode.Uri.joinPath(context.globalStorageUri, 'file-summaries');
   }
 
-  async init(): Promise<{ loaded: number }> {
-    if (this.initialized) return { loaded: this.byCacheKey.size };
+  async init(): Promise<{ loaded: number; filesLoaded: number }> {
+    if (this.initialized) return { loaded: this.byCacheKey.size, filesLoaded: this.fileByUri.size };
     this.initialized = true;
-    try {
-      await vscode.workspace.fs.createDirectory(this.dirUri);
-    } catch {
-      // best-effort
+    for (const dir of [this.dirUri, this.fileDirUri]) {
+      try {
+        await vscode.workspace.fs.createDirectory(dir);
+      } catch {
+        // best-effort
+      }
     }
     let loaded = 0;
+    let filesLoaded = 0;
+    const decoder = new TextDecoder();
     try {
       const entries = await vscode.workspace.fs.readDirectory(this.dirUri);
-      const decoder = new TextDecoder();
       for (const [name, type] of entries) {
-        if (type !== vscode.FileType.File) continue;
-        if (!name.endsWith('.json')) continue;
+        if (type !== vscode.FileType.File || !name.endsWith('.json')) continue;
         try {
-          const bytes = await vscode.workspace.fs.readFile(
-            vscode.Uri.joinPath(this.dirUri, name),
-          );
+          const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(this.dirUri, name));
           const record = JSON.parse(decoder.decode(bytes)) as SummaryRecord;
           if (!record.cacheKey || !record.pathKey || !record.summary) continue;
           this.byCacheKey.set(record.cacheKey, record);
@@ -64,9 +80,63 @@ export class SummaryCache {
         }
       }
     } catch {
-      // dir may not exist yet on first run; ignore
+      // ignore
     }
-    return { loaded };
+    try {
+      const entries = await vscode.workspace.fs.readDirectory(this.fileDirUri);
+      for (const [name, type] of entries) {
+        if (type !== vscode.FileType.File || !name.endsWith('.json')) continue;
+        try {
+          const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(this.fileDirUri, name));
+          const record = JSON.parse(decoder.decode(bytes)) as FileSummaryRecord;
+          if (!record.cacheKey || !record.uri || !record.summary) continue;
+          this.fileByUri.set(record.uri, record);
+          filesLoaded++;
+        } catch {
+          // skip
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return { loaded, filesLoaded };
+  }
+
+  fileIdentity(args: {
+    skeleton: string;
+    providerId: string;
+    promptVersion: string;
+    schemaVersion: string;
+    settingsProfile: string;
+  }): { skeletonHash: string; cacheKey: string } {
+    const skeletonHash = sha256(normalize(args.skeleton));
+    const cacheKey = sha256(
+      [
+        'file',
+        skeletonHash,
+        args.providerId,
+        args.promptVersion,
+        args.schemaVersion,
+        args.settingsProfile,
+      ].join('\x1f'),
+    );
+    return { skeletonHash, cacheKey };
+  }
+
+  getFileByUri(uri: string): FileSummaryRecord | undefined {
+    return this.fileByUri.get(uri);
+  }
+
+  async setFile(record: FileSummaryRecord): Promise<void> {
+    this.fileByUri.set(record.uri, record);
+    try {
+      const safeName = sha256(record.uri).slice(0, 32);
+      const fileUri = vscode.Uri.joinPath(this.fileDirUri, `${safeName}.json`);
+      const bytes = new TextEncoder().encode(JSON.stringify(record));
+      await vscode.workspace.fs.writeFile(fileUri, bytes);
+    } catch {
+      // best-effort
+    }
   }
 
   identity(args: {
@@ -111,15 +181,18 @@ export class SummaryCache {
   async clear(): Promise<void> {
     this.byCacheKey.clear();
     this.pathToCacheKey.clear();
-    try {
-      await vscode.workspace.fs.delete(this.dirUri, { recursive: true });
-    } catch {
-      // best-effort
-    }
-    try {
-      await vscode.workspace.fs.createDirectory(this.dirUri);
-    } catch {
-      // best-effort
+    this.fileByUri.clear();
+    for (const dir of [this.dirUri, this.fileDirUri]) {
+      try {
+        await vscode.workspace.fs.delete(dir, { recursive: true });
+      } catch {
+        // best-effort
+      }
+      try {
+        await vscode.workspace.fs.createDirectory(dir);
+      } catch {
+        // best-effort
+      }
     }
   }
 }

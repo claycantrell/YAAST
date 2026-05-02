@@ -30,6 +30,19 @@ export interface BatchSummaryResult {
   summary: SummaryJson;
 }
 
+export interface FileSummaryRequest {
+  path: string;
+  languageId: string;
+  content: string;
+  truncated: boolean;
+}
+
+export interface FileSummaryJson {
+  headline: string;
+  overview: string;
+  main_features: string[];
+}
+
 export interface SummaryProvider {
   readonly id: string;
   isAvailable(): Promise<boolean>;
@@ -38,4 +51,8 @@ export interface SummaryProvider {
     items: BatchSummaryItem[],
     token: vscode.CancellationToken,
   ): Promise<BatchSummaryResult[]>;
+  summarizeFile?(
+    req: FileSummaryRequest,
+    token: vscode.CancellationToken,
+  ): Promise<FileSummaryJson>;
 }
