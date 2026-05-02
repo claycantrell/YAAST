@@ -143,7 +143,9 @@
     "compile": "tsc -p ./",
     "lint": "eslint src --ext ts",
     "pretest": "npm run compile && npm run build",
-    "test": "node out/test/runTest.js"
+    "test": "node out/test/runTest.js",
+    "package": "npm run build && vsce package --no-dependencies --skip-license -o semantic-fold-mode.vsix",
+    "install:cursor": "npm run package && /Applications/Cursor.app/Contents/Resources/app/bin/cursor --install-extension semantic-fold-mode.vsix --force"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.88.0",
@@ -154,6 +156,7 @@
     "@types/vscode": "^1.90.0",
     "@vscode/test-cli": "^0.0.10",
     "@vscode/test-electron": "^2.4.0",
+    "@vscode/vsce": "^3.2.0",
     "esbuild": "^0.23.0",
     "typescript": "^5.4.0"
   }

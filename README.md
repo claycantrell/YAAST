@@ -29,9 +29,21 @@ DocumentSymbol + FoldingRange  →  DrawerTarget  →  SummaryProvider (LM | clo
 
 ```bash
 npm install
-npm run build
+npm run build           # bundle to dist/extension.js
+npm test                # run integration test (downloads VS Code on first run)
 # F5 in VS Code to launch Extension Development Host
 ```
+
+## Install into Cursor (or VS Code)
+
+```bash
+npm run install:cursor  # builds .vsix and installs into Cursor
+# Or for VS Code:
+npm run package
+code --install-extension semantic-fold-mode.vsix --force
+```
+
+After install, restart Cursor/VS Code, then run **Cmd+Shift+P → "Semantic Fold Mode: Set Anthropic API Key"** to configure the key (stored in OS keychain via SecretStorage). The extension also falls back to `ANTHROPIC_API_KEY` from the environment, but apps launched from the Dock may not inherit your shell env, so the explicit command is more reliable.
 
 ## License
 
