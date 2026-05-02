@@ -143,6 +143,13 @@ export class CallGraphPanel {
 <body>
   <header>
     <input id="search" type="search" placeholder="filter by path / headline" />
+    <select id="depth" title="Aggregation depth (folders deep)">
+      <option value="1">depth 1</option>
+      <option value="2" selected>depth 2</option>
+      <option value="3">depth 3</option>
+      <option value="4">depth 4</option>
+      <option value="files">files</option>
+    </select>
     <select id="layout" title="Layout">
       <option value="auto">auto</option>
       <option value="cose">force</option>
@@ -151,6 +158,7 @@ export class CallGraphPanel {
       <option value="grid">grid</option>
     </select>
     <label><input id="hideOrphans" type="checkbox" checked /> hide unconnected</label>
+    <label><input id="hideIntra" type="checkbox" checked /> only inter-folder edges</label>
     <label><input id="showExternals" type="checkbox" /> external packages</label>
     <button id="refresh">Refresh</button>
   </header>
