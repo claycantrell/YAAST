@@ -1,6 +1,6 @@
 # YAAST — Yet Another AI Summary Tool
 
-A VS Code / Cursor extension for people who suck at commenting their code.
+A VS Code / Cursor extension for navigating unfamiliar codebases
 
 YAAST puts an AI-generated headline above every function, method, and class — and a file-level overview at the top of every file. Headers are inline, hover-on-demand, persisted to disk, and only regenerate when the underlying code changes.
 
