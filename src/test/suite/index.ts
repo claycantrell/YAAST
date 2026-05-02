@@ -129,6 +129,10 @@ export async function run(): Promise<void> {
     log('--- container skeleton hash invariance ---');
     await runHashInvarianceCheck(failures, log);
 
+    // 8) Diagnostic: dump targets for the PaymentMethodPicker example.
+    log('--- PaymentMethodPicker target dump ---');
+    await dumpPaymentMethodPickerTargets(log);
+
     // Use editor to silence unused warning.
     void editor;
   }
@@ -214,6 +218,68 @@ function skeletonOf(doc: vscode.TextDocument, target: DrawerTarget): string {
         `${vscode.SymbolKind[c.kind]}::${c.name}::${doc.lineAt(c.selectionRange.start.line).text.trim()}`,
     );
   return [declLine, ...childLines].join('\n');
+}
+
+async function dumpPaymentMethodPickerTargets(log: (msg: string) => void): Promise<void> {
+  const content = `'use client';
+
+import { Banknote, Check, CreditCard } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { useLanguage } from '@/i18n';
+import type { PaymentMethod } from '../types';
+
+interface PaymentMethodPickerProps {
+  value: PaymentMethod;
+  onChange: (method: PaymentMethod) => void;
+}
+
+const methods = [
+  { key: 'cash' as const, icon: Banknote, labelKey: 'billing.cash' },
+  { key: 'check' as const, icon: Check, labelKey: 'billing.check' },
+  { key: 'card' as const, icon: CreditCard, labelKey: 'billing.card' },
+] as const;
+
+export function PaymentMethodPicker({ value, onChange }: PaymentMethodPickerProps) {
+  const { t } = useLanguage();
+
+  return (
+    <div className="grid grid-cols-3 gap-3">
+      {methods.map(({ key, icon: Icon, labelKey }) => (
+        <button
+          key={key}
+          type="button"
+          onClick={() => onChange(key)}
+          className={cn(
+            'flex flex-col items-center justify-center gap-2 p-4 rounded-lg border-2 transition-colors min-h-[80px]',
+            value === key
+              ? 'border-primary-500 bg-primary-50 text-primary-700'
+              : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+          )}
+        >
+          <Icon size={24} />
+          <span className="text-sm font-medium">{t(labelKey)}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+`;
+  const doc = await vscode.workspace.openTextDocument({ language: 'typescriptreact', content });
+  await vscode.window.showTextDocument(doc);
+  await waitForSymbols(doc, 15000);
+  const targets = await collectDrawerTargets(doc);
+  log(`PaymentMethodPicker test doc: ${targets.length} total targets`);
+  for (const t of targets) {
+    const sigLine = doc.lineAt(t.selectionRange.start.line).text.replace(/\s+/g, ' ').trim().slice(0, 80);
+    log(
+      `  ${vscode.SymbolKind[t.kind].padEnd(10)} ` +
+        `name="${t.name}" ` +
+        `path=[${t.symbolPath.join('.')}] ` +
+        `selLine=${t.selectionRange.start.line + 1} ` +
+        `fullRange=${t.fullRange.start.line + 1}-${t.fullRange.end.line + 1} ` +
+        `signature="${sigLine}"`,
+    );
+  }
 }
 
 function countVisibleLines(editor: vscode.TextEditor): number {

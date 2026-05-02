@@ -126,6 +126,46 @@ class RegenerateCodeLensProvider implements vscode.CodeLensProvider {
   }
 }
 
+class SemanticFoldHoverProvider implements vscode.HoverProvider {
+  provideHover(doc: vscode.TextDocument, position: vscode.Position): vscode.Hover | undefined {
+    if (!enabled) return undefined;
+    const editor = vscode.window.visibleTextEditors.find((e) => e.document === doc);
+    if (!editor) return undefined;
+    const targets = targetsByEditor.get(editor) ?? [];
+
+    // 1) Line 0 → file summary banner.
+    if (position.line === 0) {
+      const lookup = lookupFileSummary(doc, targets);
+      if (lookup) {
+        const md = new vscode.MarkdownString(buildFileHoverMarkdown(doc, lookup));
+        md.isTrusted = { enabledCommands: ['semanticFoldMode.regenerateFileSummary'] };
+        md.supportThemeIcons = true;
+        return new vscode.Hover(md);
+      }
+    }
+
+    // 2) Find the most-specific (smallest fullRange) target whose fullRange contains
+    //    the cursor position. Smaller wins so a method's hover beats its enclosing class.
+    let best: DrawerTarget | undefined;
+    let bestSize = Number.POSITIVE_INFINITY;
+    for (const t of targets) {
+      if (!t.fullRange.contains(position)) continue;
+      const size = (t.fullRange.end.line - t.fullRange.start.line) * 10000 + t.fullRange.end.character;
+      if (size < bestSize) {
+        bestSize = size;
+        best = t;
+      }
+    }
+    if (!best) return undefined;
+
+    const lookup = lookupSummary(doc, best);
+    const md = new vscode.MarkdownString(buildHoverMarkdown(best, lookup));
+    md.isTrusted = { enabledCommands: ['semanticFoldMode.regenerateUnitAt'] };
+    md.supportThemeIcons = true;
+    return new vscode.Hover(md);
+  }
+}
+
 let summaryQueue: TaskQueue;
 
 export async function activate(context: vscode.ExtensionContext) {
@@ -143,9 +183,12 @@ export async function activate(context: vscode.ExtensionContext) {
   output.appendLine(`[cache] loaded ${loaded} symbol summaries + ${filesLoaded} file summaries`);
 
   lensProvider = new RegenerateCodeLensProvider();
+  const hoverProvider = new SemanticFoldHoverProvider();
   context.subscriptions.push(
     vscode.languages.registerCodeLensProvider({ scheme: 'file' }, lensProvider),
     vscode.languages.registerCodeLensProvider({ scheme: 'untitled' }, lensProvider),
+    vscode.languages.registerHoverProvider({ scheme: 'file' }, hoverProvider),
+    vscode.languages.registerHoverProvider({ scheme: 'untitled' }, hoverProvider),
     fileBannerDecorationType,
   );
 
