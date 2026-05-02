@@ -23,9 +23,12 @@ export function applyVirtualHeaders(editor: vscode.TextEditor, items: HeaderItem
     const col = line.firstNonWhitespaceCharacterIndex;
     const endCol = Math.max(col + 1, Math.min(col + 1, line.text.length));
 
+    const hover = new vscode.MarkdownString(item.hover);
+    hover.isTrusted = { enabledCommands: ['semanticFoldMode.regenerateUnitAt'] };
+    hover.supportThemeIcons = true;
     decos.push({
       range: new vscode.Range(item.line, col, item.line, endCol),
-      hoverMessage: new vscode.MarkdownString(item.hover),
+      hoverMessage: hover,
       renderOptions: {
         before: { contentText: `⟪ ${item.text} ⟫ ` },
       },

@@ -87,16 +87,17 @@ class RegenerateCodeLensProvider implements vscode.CodeLensProvider {
       const lookup = lookupSummary(doc, t);
       const id = identityFor(doc, t);
       const pending = pendingByCacheKey.has(id.cacheKey);
+      // Fresh, non-pending symbols don't get a CodeLens — keeps the editor uncluttered.
+      // Regenerate is still available from the hover card.
+      if (lookup && !lookup.stale && !pending) continue;
       const range = new vscode.Range(t.selectionRange.start.line, 0, t.selectionRange.start.line, 0);
       let title: string;
       if (pending) {
         title = '$(sync~spin) Generating…';
       } else if (!lookup) {
         title = '$(sparkle) Generate summary';
-      } else if (lookup.stale) {
-        title = '$(warning) Out of date · Regenerate';
       } else {
-        title = '$(refresh) Regenerate';
+        title = '$(warning) Out of date · Regenerate';
       }
       lenses.push(
         new vscode.CodeLens(range, {
@@ -601,8 +602,17 @@ function firstNonEmptyLine(text: string): string {
 }
 
 function buildHoverMarkdown(target: DrawerTarget, lookup: SummaryLookup | undefined): string {
+  const args = encodeURIComponent(JSON.stringify([target.uri, target.selectionRange.start.line]));
+  const regenLink = `[$(refresh) Regenerate](command:semanticFoldMode.regenerateUnitAt?${args} "Regenerate this summary")`;
+
   if (!lookup) {
-    return `**${target.name}** — ${vscode.SymbolKind[target.kind]}\n\n_AI summary not yet generated._`;
+    return [
+      `**${target.name}** — ${vscode.SymbolKind[target.kind]}`,
+      '',
+      '_AI summary not yet generated._',
+      '',
+      regenLink,
+    ].join('\n');
   }
   const { summary, stale } = lookup;
   const lines: string[] = [];
@@ -611,7 +621,7 @@ function buildHoverMarkdown(target: DrawerTarget, lookup: SummaryLookup | undefi
   if (summary.methods_used.length) lines.push('', `**Methods used:** ${summary.methods_used.join(', ')}`);
   if (summary.techniques.length) lines.push(`**Techniques:** ${summary.techniques.join(', ')}`);
   if (summary.risks.length) lines.push(`**Risks:** ${summary.risks.join(', ')}`);
-  lines.push('', `_Confidence: ${summary.confidence}_`);
+  lines.push('', `_Confidence: ${summary.confidence}_`, '', regenLink);
   return lines.join('\n');
 }
 
