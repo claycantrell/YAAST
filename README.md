@@ -1,36 +1,53 @@
-# Semantic Fold Mode
+# YAAST — Yet Another AI Summary Tool
 
-A VS Code / Cursor extension that folds code symbols into compact, AI-summarized virtual headers — so a function collapses to one line that tells you *what it does*, not just `function foo(...) { ... }`.
+A VS Code / Cursor extension that reads code so you don't have to.
 
-Built on top of VS Code's native symbol and folding providers, with text decorations for headers, hover cards for detail, and CodeLens for actions. Powered by the Anthropic Claude API (default model: `claude-haiku-4-5`).
+YAAST puts an AI-generated headline above every function, method, and class — and a file-level overview at the top of every file. Headers are inline, hover-on-demand, persisted to disk, and only regenerate when the underlying code changes. No chat panel, no asking — the summaries are already there.
+
+The name is a joke. There are a lot of AI summary tools. This one happens to be useful for *navigating* code rather than chatting about it.
 
 ## Install
 
-Download the latest `semantic-fold-mode.vsix` from the [Releases page](https://github.com/claycantrell/semantic-fold-mode/releases/latest), then:
+Grab the latest `yaast.vsix` from [Releases](https://github.com/claycantrell/YAAST/releases/latest).
 
 **Cursor:**
 ```bash
-cursor --install-extension /path/to/semantic-fold-mode.vsix
+cursor --install-extension /path/to/yaast.vsix
 ```
 
 **VS Code:**
 ```bash
-code --install-extension /path/to/semantic-fold-mode.vsix
+code --install-extension /path/to/yaast.vsix
 ```
 
 Or in either editor: **Extensions sidebar → ⋯ menu → "Install from VSIX…"**.
 
-After install, run **Cmd+Shift+P → "Semantic Fold Mode: Set Anthropic API Key"** and paste your `sk-ant-...` key. It's stored in the OS keychain via VS Code's SecretStorage — never written to disk in plaintext, never synced.
+After install, run **`Cmd+Shift+P → "Semantic Fold Mode: Set Anthropic API Key"`** and paste your `sk-ant-...` key. It's stored in the OS keychain via SecretStorage — never written to disk in plaintext, never synced.
 
-You'll need an API key from <https://console.anthropic.com>.
+You'll need an API key from [console.anthropic.com](https://console.anthropic.com).
 
-## How it works
+## How to use it
 
-1. Open a code file. Each function/method/class is detected via VS Code's symbol provider.
-2. Click the top-of-file CodeLens **`✨ Generate summaries for this file (N)`**. One batched API call summarizes all eligible symbols.
-3. Each function's body is folded behind a virtual header showing the AI-generated headline. Hover for purpose, methods used, techniques, risks, and confidence.
-4. Edit a function — only that function's summary marks itself out-of-date. Click the inline lens or the regenerate link in its hover card to refresh just that one. Other functions stay untouched.
-5. Summaries persist on disk (`globalStorage`), so reopening files later doesn't re-spend tokens.
+1. Open any code file. You'll see deterministic headers (`function buildIndex`, etc.) above each symbol, plus a top-of-file CodeLens: **`✨ Generate summaries for this file (N)`**. Click it.
+2. One batched API call summarizes everything. Land in ~5–10s.
+3. The 📘 banner at the top of the file shows the file's headline. Hover the banner (in the leading whitespace) for the full overview — purpose, main features, regenerate link.
+4. Each function gets a `⟪ AI headline ⟫` inline. Hover the inline text for the full card — purpose, methods used, techniques, risks, confidence.
+5. Edit a function. Only that function marks itself out-of-date. The class containing it stays fresh (we hash containers on their skeleton, not their full body). Click the inline lens to regenerate just that one.
+
+## What's good about it
+
+- **Ambient, not on-demand.** Summaries are already there when you open a file. You're not asking a chatbot 50 times.
+- **Persistent.** Every summary lives on disk, keyed by content hash. Reopen the file later, no re-spend.
+- **Selective regeneration.** Editing one function only invalidates that function. The page-level "regenerate" button only re-summarizes stale items.
+- **Batched.** Up to 30 symbols per API call. ~50% input-token saving vs. one-by-one. Cap configurable.
+- **Native to the editor.** Built on VS Code's symbol/folding/decoration/codelens APIs. No webviews, no chat panel.
+
+## What it's not (yet)
+
+- **Not a chatbot.** Doesn't answer questions about your code. Cursor and Copilot already do that.
+- **Not perfect.** AI summaries can be confidently wrong. The `Confidence: low/medium/high` field helps, but it's also AI-generated.
+- **Not for secret code.** Source goes to Anthropic. Don't point it at code you can't share with a third party. (A local-Ollama provider is stubbed for the future.)
+- **Not yet for non-developers.** Lives only in VS Code / Cursor. The summary engine could power a web UI for non-IDE readers, but that's not built.
 
 ## Settings
 
@@ -38,30 +55,16 @@ You'll need an API key from <https://console.anthropic.com>.
 |---|---|---|
 | `semanticFoldMode.enabled` | `true` | Master toggle. |
 | `semanticFoldMode.provider` | `cloud` | `cloud` (Anthropic), `static` (no AI), `vscode-lm` and `local` are stubs. |
-| `semanticFoldMode.cloud.model` | `claude-haiku-4-5` | Any Claude model id. |
+| `semanticFoldMode.cloud.model` | `claude-haiku-4-5` | Any Claude model id (`claude-sonnet-4-6`, `claude-opus-4-7`, etc.) |
 | `semanticFoldMode.cloud.batchSize` | `30` | Max symbols per batched call. |
 | `semanticFoldMode.cloud.maxBatchInputChars` | `60000` | Char budget per batch. Splits if exceeded. |
 | `semanticFoldMode.autoFoldOnOpen` | `true` | Auto-collapse function bodies on open. |
 | `semanticFoldMode.includeKinds` | `["Function","Method","Class"]` | Symbol kinds to summarize. |
 | `semanticFoldMode.concurrency` | `3` | Max in-flight summary calls. |
 
-## Architecture
-
-```
-DocumentSymbol + FoldingRange  →  DrawerTarget (with skeleton hash for containers)
-                                          ↓
-                          SummaryProvider.summarizeBatch (Claude / static)
-                                          ↓
-                  Decorations (header) + Hover (detail + regenerate link)
-                  CodeLens (top-of-file generate, per-symbol regenerate when needed)
-                  SummaryCache (in-memory + on-disk JSON, keyed by content hash)
-```
-
-Containers (Class, Interface, Namespace, Module, Enum) are hashed on a *skeleton* — the declaration line plus each direct child's declaration line — instead of the full body. So editing a method body invalidates the method but not its parent class.
-
 ## Costs
 
-Default provider is Claude Haiku 4.5. Rough estimates:
+Default provider is Claude Haiku 4.5. Rough numbers:
 
 - ~$0.02 per file with 30 functions in a single batched call.
 - Disk cache means each unique chunk of code is paid for at most once.
@@ -70,8 +73,8 @@ Default provider is Claude Haiku 4.5. Rough estimates:
 ## Development
 
 ```bash
-git clone https://github.com/claycantrell/semantic-fold-mode
-cd semantic-fold-mode
+git clone https://github.com/claycantrell/YAAST
+cd YAAST
 npm install
 npm run build           # bundle into dist/extension.js
 npm test                # integration test (downloads VS Code on first run)
@@ -94,7 +97,7 @@ git tag v0.1.1
 git push --tags
 ```
 
-The workflow at `.github/workflows/release.yml` builds and attaches `semantic-fold-mode.vsix` to a new GitHub Release.
+The workflow at `.github/workflows/release.yml` builds and attaches `yaast.vsix` to a new GitHub Release.
 
 ## License
 

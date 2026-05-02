@@ -29,19 +29,19 @@ jobs:
         run: npm run build
 
       - name: Package VSIX
-        run: npx vsce package --no-dependencies --skip-license -o semantic-fold-mode.vsix
+        run: npx vsce package --no-dependencies --skip-license -o yaast.vsix
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: semantic-fold-mode-vsix
-          path: semantic-fold-mode.vsix
+          name: yaast-vsix
+          path: yaast.vsix
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: semantic-fold-mode.vsix
+          files: yaast.vsix
           generate_release_notes: true
           draft: false
           prerelease: false

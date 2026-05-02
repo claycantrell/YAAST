@@ -1,14 +1,14 @@
 {
-  "name": "semantic-fold-mode",
-  "displayName": "Semantic Fold Mode",
-  "description": "Fold code symbols into compact, AI-summarized virtual headers in VS Code.",
+  "name": "yaast",
+  "displayName": "YAAST — Yet Another AI Summary Tool",
+  "description": "Reads code so you don't have to. Inline AI-generated headers and file overviews above each symbol; hover for the full card.",
   "version": "0.1.0",
   "publisher": "claycantrell",
   "private": true,
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/claycantrell/semantic-fold-mode.git"
+    "url": "https://github.com/claycantrell/YAAST.git"
   },
   "engines": {
     "vscode": "^1.90.0"
@@ -148,8 +148,8 @@
     "lint": "eslint src --ext ts",
     "pretest": "npm run compile && npm run build",
     "test": "node out/test/runTest.js",
-    "package": "npm run build && vsce package --no-dependencies --skip-license -o semantic-fold-mode.vsix",
-    "install:cursor": "npm run package && /Applications/Cursor.app/Contents/Resources/app/bin/cursor --install-extension semantic-fold-mode.vsix --force"
+    "package": "npm run build && vsce package --no-dependencies --skip-license -o yaast.vsix",
+    "install:cursor": "npm run package && /Applications/Cursor.app/Contents/Resources/app/bin/cursor --install-extension yaast.vsix --force"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.88.0",
