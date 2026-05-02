@@ -126,20 +126,25 @@ export async function activate(context: vscode.ExtensionContext) {
   setTimeout(() => refreshAllVisibleEditors(), 500);
   setTimeout(() => refreshAllVisibleEditors(), 2000);
 
-  // First-run nudge if no API key and provider is cloud.
+  // First-run nudge: if we'd need an Anthropic API key for the active provider, prompt for it.
   setTimeout(async () => {
     const provider = registry.active();
-    if (provider.id === 'cloud' && !(await provider.isAvailable())) {
-      const choice = await vscode.window.showInformationMessage(
-        'Semantic Fold Mode: set your Anthropic API key to enable AI summaries.',
-        'Set API Key',
-        'Dismiss',
-      );
-      if (choice === 'Set API Key') {
-        await vscode.commands.executeCommand('semanticFoldMode.setApiKey');
-      }
+    if (provider.id !== 'cloud') return;
+    if (await provider.isAvailable()) return;
+    const choice = await vscode.window.showInformationMessage(
+      'Semantic Fold Mode needs an Anthropic API key to generate AI summaries.',
+      'Set API Key',
+      'Use static headers (no AI)',
+      'Dismiss',
+    );
+    if (choice === 'Set API Key') {
+      await vscode.commands.executeCommand('semanticFoldMode.setApiKey');
+    } else if (choice === 'Use static headers (no AI)') {
+      await vscode.workspace
+        .getConfiguration('semanticFoldMode')
+        .update('provider', 'static', vscode.ConfigurationTarget.Global);
     }
-  }, 2500);
+  }, 1500);
 }
 
 async function refreshAllVisibleEditors() {

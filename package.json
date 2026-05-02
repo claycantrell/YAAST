@@ -68,8 +68,8 @@
         "semanticFoldMode.provider": {
           "type": "string",
           "enum": ["vscode-lm", "cloud", "local", "static"],
-          "default": "vscode-lm",
-          "description": "Summary backend. 'static' produces deterministic non-AI headers."
+          "default": "cloud",
+          "description": "Summary backend. 'cloud' uses the Anthropic API. 'static' produces deterministic non-AI headers."
         },
         "semanticFoldMode.cloud.model": {
           "type": "string",
@@ -126,7 +126,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.88.0",
-    "zod": "^3.23.0"
+    "zod": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
