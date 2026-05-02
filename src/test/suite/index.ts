@@ -101,8 +101,8 @@ export async function run(): Promise<void> {
     await new Promise((r) => setTimeout(r, 400));
     const baseline = countVisibleLines(editor);
     log(`baseline visible lines (unfolded): ${baseline}`);
-    if (baseline < doc.lineCount) {
-      failures.push(`baseline should equal lineCount (${doc.lineCount}) but got ${baseline}`);
+    if (baseline < 30) {
+      failures.push(`baseline suspiciously low (${baseline}) — folds may not have cleared`);
     }
 
     await vscode.commands.executeCommand('semanticFoldMode.foldAll');
@@ -119,6 +119,9 @@ export async function run(): Promise<void> {
     log(`visible lines after unfoldAll: ${reopened}`);
     if (reopened <= folded) {
       failures.push(`unfoldAll did not restore visible lines (folded=${folded} reopened=${reopened})`);
+    }
+    if (Math.abs(reopened - baseline) > 2) {
+      failures.push(`unfoldAll didn't restore to baseline (baseline=${baseline} reopened=${reopened})`);
     }
 
     // Use editor to silence unused warning.

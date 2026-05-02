@@ -37,6 +37,10 @@
         "title": "Semantic Fold Mode: Regenerate Summary at Cursor"
       },
       {
+        "command": "semanticFoldMode.regeneratePage",
+        "title": "Semantic Fold Mode: Regenerate Out-of-Date Summaries on This Page"
+      },
+      {
         "command": "semanticFoldMode.promoteToComment",
         "title": "Semantic Fold Mode: Promote Summary to Doc Comment"
       },

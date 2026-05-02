@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 
 export interface DrawerTarget {
   id: string;
+  pathKey: string;
+  symbolPath: string[];
   uri: string;
   languageId: string;
   name: string;
@@ -23,12 +25,15 @@ export async function collectDrawerTargets(doc: vscode.TextDocument): Promise<Dr
 
   const documentSymbols = (symbols ?? []).filter(isDocumentSymbolLike);
 
-  return flatten(documentSymbols).map((sym) => {
+  return flatten(documentSymbols).map(({ sym, path }) => {
     const fullRange = toRange(sym.range);
     const selectionRange = toRange(sym.selectionRange);
+    const uriStr = doc.uri.toString();
     return {
-      id: `${doc.uri.toString()}#${sym.name}:${selectionRange.start.line}`,
-      uri: doc.uri.toString(),
+      id: `${uriStr}#${path.join('.')}:${selectionRange.start.line}`,
+      pathKey: `${uriStr}#${path.join('.')}`,
+      symbolPath: path,
+      uri: uriStr,
       languageId: doc.languageId,
       name: sym.name,
       detail: sym.detail,
@@ -85,11 +90,15 @@ function pickSmallestContainingFold(
   return containing[0];
 }
 
-function flatten(list: DocumentSymbolLike[]): DocumentSymbolLike[] {
-  const out: DocumentSymbolLike[] = [];
+function flatten(
+  list: DocumentSymbolLike[],
+  ancestors: string[] = [],
+): Array<{ sym: DocumentSymbolLike; path: string[] }> {
+  const out: Array<{ sym: DocumentSymbolLike; path: string[] }> = [];
   for (const item of list) {
-    out.push(item);
-    if (item.children?.length) out.push(...flatten(item.children));
+    const path = [...ancestors, item.name];
+    out.push({ sym: item, path });
+    if (item.children?.length) out.push(...flatten(item.children, path));
   }
   return out;
 }

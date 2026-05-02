@@ -3,19 +3,24 @@ import { collectDrawerTargets, type DrawerTarget } from './extraction/symbols';
 import { applyVirtualHeaders, headerDecorationType } from './rendering/decorations';
 import { SummaryProviderRegistry } from './providers/registry';
 import type { SummaryJson } from './providers/types';
-import { SummaryCache } from './cache/summaryCache';
+import { SummaryCache, type CacheIdentity } from './cache/summaryCache';
 import { CloudProvider } from './providers/cloud';
 
 const PROMPT_VERSION = 'v1';
 const SCHEMA_VERSION = 'v1';
 
+interface SummaryLookup {
+  summary: SummaryJson;
+  stale: boolean;
+}
+
 let output: vscode.OutputChannel;
 let statusBar: vscode.StatusBarItem;
 let registry: SummaryProviderRegistry;
 let cache: SummaryCache;
+let lensProvider: RegenerateCodeLensProvider;
 let enabled = true;
 const targetsByEditor = new WeakMap<vscode.TextEditor, DrawerTarget[]>();
-const summaryByCacheKey = new Map<string, SummaryJson>();
 const pendingByCacheKey = new Set<string>();
 const autoFoldedDocs = new WeakSet<vscode.TextDocument>();
 
@@ -39,6 +44,44 @@ class TaskQueue {
   }
 }
 
+class RegenerateCodeLensProvider implements vscode.CodeLensProvider {
+  private readonly emitter = new vscode.EventEmitter<void>();
+  readonly onDidChangeCodeLenses = this.emitter.event;
+  refresh(): void {
+    this.emitter.fire();
+  }
+  provideCodeLenses(doc: vscode.TextDocument): vscode.CodeLens[] {
+    const editor = vscode.window.visibleTextEditors.find((e) => e.document === doc);
+    if (!editor || !enabled) return [];
+    const targets = targetsByEditor.get(editor) ?? [];
+    const lenses: vscode.CodeLens[] = [];
+    for (const t of targets) {
+      const lookup = lookupSummary(doc, t);
+      const id = identityFor(doc, t);
+      const pending = pendingByCacheKey.has(id.cacheKey);
+      const range = new vscode.Range(t.selectionRange.start.line, 0, t.selectionRange.start.line, 0);
+      let title: string;
+      if (pending) {
+        title = '$(sync~spin) Generating…';
+      } else if (!lookup) {
+        title = '$(sparkle) Generate summary';
+      } else if (lookup.stale) {
+        title = '$(warning) Out of date · Regenerate';
+      } else {
+        title = '$(refresh) Regenerate';
+      }
+      lenses.push(
+        new vscode.CodeLens(range, {
+          title,
+          command: 'semanticFoldMode.regenerateUnitAt',
+          arguments: [doc.uri.toString(), t.selectionRange.start.line],
+        }),
+      );
+    }
+    return lenses;
+  }
+}
+
 let summaryQueue: TaskQueue;
 
 export async function activate(context: vscode.ExtensionContext) {
@@ -52,6 +95,14 @@ export async function activate(context: vscode.ExtensionContext) {
 
   registry = new SummaryProviderRegistry(context, output);
   cache = new SummaryCache(context);
+  const { loaded } = await cache.init();
+  output.appendLine(`[cache] loaded ${loaded} persisted summaries`);
+
+  lensProvider = new RegenerateCodeLensProvider();
+  context.subscriptions.push(
+    vscode.languages.registerCodeLensProvider({ scheme: 'file' }, lensProvider),
+    vscode.languages.registerCodeLensProvider({ scheme: 'untitled' }, lensProvider),
+  );
 
   const cfg = vscode.workspace.getConfiguration('semanticFoldMode');
   enabled = cfg.get('enabled', true);
@@ -66,26 +117,50 @@ export async function activate(context: vscode.ExtensionContext) {
       await refreshAllVisibleEditors();
     }),
     vscode.commands.registerCommand('semanticFoldMode.regenerate', async () => {
+      // Regenerate the unit under the cursor in the active editor.
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) return;
+      const target = targetAtLine(editor, editor.selection.active.line);
+      if (!target) {
+        vscode.window.showInformationMessage('No drawer target at cursor.');
+        return;
+      }
+      enqueueSummary(editor, target, true);
+    }),
+    vscode.commands.registerCommand(
+      'semanticFoldMode.regenerateUnitAt',
+      async (uriStr: string, line: number) => {
+        const editor = vscode.window.visibleTextEditors.find(
+          (e) => e.document.uri.toString() === uriStr,
+        );
+        if (!editor) return;
+        const target = targetAtLine(editor, line);
+        if (!target) return;
+        enqueueSummary(editor, target, true);
+      },
+    ),
+    vscode.commands.registerCommand('semanticFoldMode.regeneratePage', async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) return;
       const targets = targetsByEditor.get(editor) ?? [];
-      const cursorLine = editor.selection.active.line;
-      const target =
-        targets.find(
-          (t) => t.fullRange.start.line <= cursorLine && t.fullRange.end.line >= cursorLine,
-        ) ?? targets[0];
-      if (!target) return;
-      const id = identityFor(editor.document, target);
-      summaryByCacheKey.delete(id.cacheKey);
-      enqueueSummary(editor, target);
+      const stale = targets.filter((t) => {
+        const lookup = lookupSummary(editor.document, t);
+        return !lookup || lookup.stale;
+      });
+      if (stale.length === 0) {
+        vscode.window.showInformationMessage('No out-of-date summaries on this page.');
+        return;
+      }
+      output.appendLine(`[regeneratePage] queueing ${stale.length} target(s)`);
+      for (const t of stale) enqueueSummary(editor, t, false);
     }),
     vscode.commands.registerCommand('semanticFoldMode.promoteToComment', async () => {
       output.appendLine('[command] promoteToComment (stub)');
     }),
     vscode.commands.registerCommand('semanticFoldMode.clearCache', async () => {
       await cache.clear();
-      summaryByCacheKey.clear();
       vscode.window.showInformationMessage('Semantic Fold Mode: cache cleared');
+      lensProvider.refresh();
       await refreshAllVisibleEditors();
     }),
     vscode.commands.registerCommand('semanticFoldMode.foldAll', async () => {
@@ -126,7 +201,6 @@ export async function activate(context: vscode.ExtensionContext) {
   setTimeout(() => refreshAllVisibleEditors(), 500);
   setTimeout(() => refreshAllVisibleEditors(), 2000);
 
-  // First-run nudge: if we'd need an Anthropic API key for the active provider, prompt for it.
   setTimeout(async () => {
     const provider = registry.active();
     if (provider.id !== 'cloud') return;
@@ -157,6 +231,7 @@ async function refreshEditor(editor: vscode.TextEditor) {
   if (!enabled) {
     applyVirtualHeaders(editor, []);
     updateStatusBar(0);
+    lensProvider?.refresh();
     return;
   }
 
@@ -170,6 +245,7 @@ async function refreshEditor(editor: vscode.TextEditor) {
     );
     targetsByEditor.set(editor, targets);
     renderHeaders(editor);
+    lensProvider?.refresh();
 
     if (
       targets.length > 0 &&
@@ -180,15 +256,14 @@ async function refreshEditor(editor: vscode.TextEditor) {
       await foldDrawers(editor);
     }
 
+    // Auto-generate ONLY for targets that have never been summarized before.
+    // Stale targets (edited since last summary) are NOT auto-regenerated; the
+    // user must click the inline CodeLens or run "Regenerate Page".
     for (const t of targets) {
       const id = identityFor(editor.document, t);
-      if (summaryByCacheKey.has(id.cacheKey)) continue;
-      const persisted = cache.get(id.cacheKey);
-      if (persisted) {
-        summaryByCacheKey.set(id.cacheKey, persisted.summary);
-        continue;
-      }
-      enqueueSummary(editor, t);
+      if (cache.getByCacheKey(id.cacheKey)) continue; // already fresh
+      if (cache.getByPathKey(t.pathKey)) continue; // stale, await user
+      enqueueSummary(editor, t, false);
     }
   } catch (err) {
     output.appendLine(`[refresh error] ${(err as Error).message}`);
@@ -198,23 +273,35 @@ async function refreshEditor(editor: vscode.TextEditor) {
 function renderHeaders(editor: vscode.TextEditor): void {
   const targets = targetsByEditor.get(editor) ?? [];
   const items = targets.map((t) => {
-    const summary = lookupSummary(editor.document, t);
+    const lookup = lookupSummary(editor.document, t);
+    let text: string;
+    if (!lookup) {
+      text = deterministicHeader(t.name, t.kind);
+    } else if (lookup.stale) {
+      text = `⚠ ${lookup.summary.headline}`;
+    } else {
+      text = lookup.summary.headline;
+    }
     return {
       line: t.selectionRange.start.line,
-      text: summary?.headline ?? deterministicHeader(t.name, t.kind),
-      hover: buildHoverMarkdown(t, summary),
+      text,
+      hover: buildHoverMarkdown(t, lookup),
     };
   });
   applyVirtualHeaders(editor, items);
   updateStatusBar(targets.length);
 }
 
-function lookupSummary(doc: vscode.TextDocument, target: DrawerTarget): SummaryJson | undefined {
+function lookupSummary(doc: vscode.TextDocument, target: DrawerTarget): SummaryLookup | undefined {
   const id = identityFor(doc, target);
-  return summaryByCacheKey.get(id.cacheKey);
+  const fresh = cache.getByCacheKey(id.cacheKey);
+  if (fresh) return { summary: fresh.summary, stale: false };
+  const stale = cache.getByPathKey(target.pathKey);
+  if (stale) return { summary: stale.summary, stale: true };
+  return undefined;
 }
 
-function identityFor(doc: vscode.TextDocument, target: DrawerTarget) {
+function identityFor(doc: vscode.TextDocument, target: DrawerTarget): CacheIdentity {
   const slice = doc.getText(target.fullRange);
   const provider = registry.active();
   return cache.identity({
@@ -227,15 +314,27 @@ function identityFor(doc: vscode.TextDocument, target: DrawerTarget) {
   });
 }
 
-function enqueueSummary(editor: vscode.TextEditor, target: DrawerTarget): void {
+function targetAtLine(editor: vscode.TextEditor, line: number): DrawerTarget | undefined {
+  const targets = targetsByEditor.get(editor) ?? [];
+  // Prefer exact match on selection line; fall back to enclosing range.
+  return (
+    targets.find((t) => t.selectionRange.start.line === line) ??
+    targets.find((t) => t.fullRange.start.line <= line && t.fullRange.end.line >= line)
+  );
+}
+
+function enqueueSummary(editor: vscode.TextEditor, target: DrawerTarget, force: boolean): void {
   const id = identityFor(editor.document, target);
   if (pendingByCacheKey.has(id.cacheKey)) return;
+  if (!force && cache.getByCacheKey(id.cacheKey)) return; // already fresh
   pendingByCacheKey.add(id.cacheKey);
+  lensProvider?.refresh();
 
   summaryQueue.add(async () => {
     const provider = registry.active();
     if (!(await provider.isAvailable())) {
       pendingByCacheKey.delete(id.cacheKey);
+      lensProvider?.refresh();
       return;
     }
     const tokenSource = new vscode.CancellationTokenSource();
@@ -247,7 +346,7 @@ function enqueueSummary(editor: vscode.TextEditor, target: DrawerTarget): void {
         {
           languageId: editor.document.languageId,
           symbolKind: vscode.SymbolKind[target.kind],
-          symbolPath: [target.name],
+          symbolPath: target.symbolPath,
           signature,
           truncated: false,
           codeSlice: slice,
@@ -255,9 +354,9 @@ function enqueueSummary(editor: vscode.TextEditor, target: DrawerTarget): void {
         tokenSource.token,
       );
       const latency = Date.now() - start;
-      summaryByCacheKey.set(id.cacheKey, summary);
-      cache.set({
+      await cache.set({
         cacheKey: id.cacheKey,
+        pathKey: target.pathKey,
         targetId: target.id,
         semanticHash: id.semanticHash,
         sourceHash: id.sourceHash,
@@ -269,11 +368,13 @@ function enqueueSummary(editor: vscode.TextEditor, target: DrawerTarget): void {
         latencyMs: latency,
       });
       renderHeaders(editor);
+      lensProvider?.refresh();
     } catch (err) {
-      output.appendLine(`[summary error] ${target.name}: ${(err as Error).message}`);
+      output.appendLine(`[summary error] ${target.symbolPath.join('.')}: ${(err as Error).message}`);
     } finally {
       tokenSource.dispose();
       pendingByCacheKey.delete(id.cacheKey);
+      lensProvider?.refresh();
     }
   });
 }
@@ -286,11 +387,14 @@ function firstNonEmptyLine(text: string): string {
   return '';
 }
 
-function buildHoverMarkdown(target: DrawerTarget, summary: SummaryJson | undefined): string {
-  if (!summary) {
+function buildHoverMarkdown(target: DrawerTarget, lookup: SummaryLookup | undefined): string {
+  if (!lookup) {
     return `**${target.name}** — ${vscode.SymbolKind[target.kind]}\n\n_AI summary not yet generated._`;
   }
-  const lines = [`**${summary.headline}**`, '', summary.purpose];
+  const { summary, stale } = lookup;
+  const lines: string[] = [];
+  if (stale) lines.push('⚠ _Out of date — content edited since last summary._', '');
+  lines.push(`**${summary.headline}**`, '', summary.purpose);
   if (summary.methods_used.length) lines.push('', `**Methods used:** ${summary.methods_used.join(', ')}`);
   if (summary.techniques.length) lines.push(`**Techniques:** ${summary.techniques.join(', ')}`);
   if (summary.risks.length) lines.push(`**Risks:** ${summary.risks.join(', ')}`);
