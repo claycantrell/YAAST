@@ -133,36 +133,37 @@ class SemanticFoldHoverProvider implements vscode.HoverProvider {
     if (!editor) return undefined;
     const targets = targetsByEditor.get(editor) ?? [];
 
-    // 1) Line 0 → file summary banner.
+    // We render the AI descriptor as a virtual `before` decoration in the leading
+    // whitespace of the declaration line. Fire the hover ONLY when the cursor is
+    // in that whitespace zone (line === target.selectionRange.start.line and
+    // character <= firstNonWhitespaceCharacterIndex). That matches where the
+    // user sees the ⟪ ... ⟫ text. Hovering the actual code falls through.
+
+    // Line 0 → file summary banner.
     if (position.line === 0) {
       const lookup = lookupFileSummary(doc, targets);
       if (lookup) {
-        const md = new vscode.MarkdownString(buildFileHoverMarkdown(doc, lookup));
-        md.isTrusted = { enabledCommands: ['semanticFoldMode.regenerateFileSummary'] };
-        md.supportThemeIcons = true;
-        return new vscode.Hover(md);
+        const firstLine = doc.lineAt(0);
+        if (position.character <= firstLine.firstNonWhitespaceCharacterIndex) {
+          const md = new vscode.MarkdownString(buildFileHoverMarkdown(doc, lookup));
+          md.isTrusted = { enabledCommands: ['semanticFoldMode.regenerateFileSummary'] };
+          md.supportThemeIcons = true;
+          return new vscode.Hover(md);
+        }
       }
     }
 
-    // 2) Find the most-specific (smallest fullRange) target whose fullRange contains
-    //    the cursor position. Smaller wins so a method's hover beats its enclosing class.
-    let best: DrawerTarget | undefined;
-    let bestSize = Number.POSITIVE_INFINITY;
     for (const t of targets) {
-      if (!t.fullRange.contains(position)) continue;
-      const size = (t.fullRange.end.line - t.fullRange.start.line) * 10000 + t.fullRange.end.character;
-      if (size < bestSize) {
-        bestSize = size;
-        best = t;
-      }
+      if (position.line !== t.selectionRange.start.line) continue;
+      const line = doc.lineAt(position.line);
+      if (position.character > line.firstNonWhitespaceCharacterIndex) continue;
+      const lookup = lookupSummary(doc, t);
+      const md = new vscode.MarkdownString(buildHoverMarkdown(t, lookup));
+      md.isTrusted = { enabledCommands: ['semanticFoldMode.regenerateUnitAt'] };
+      md.supportThemeIcons = true;
+      return new vscode.Hover(md);
     }
-    if (!best) return undefined;
-
-    const lookup = lookupSummary(doc, best);
-    const md = new vscode.MarkdownString(buildHoverMarkdown(best, lookup));
-    md.isTrusted = { enabledCommands: ['semanticFoldMode.regenerateUnitAt'] };
-    md.supportThemeIcons = true;
-    return new vscode.Hover(md);
+    return undefined;
   }
 }
 
