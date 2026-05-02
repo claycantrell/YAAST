@@ -56,15 +56,27 @@ export async function clusterFiles(args: {
   );
   const start = Date.now();
 
+  // Each file id costs ~5 output tokens (the id + quotes + comma + whitespace).
+  // Plus ~50 tokens of cluster metadata per cluster, plus prompt overhead.
+  // Cap at 16K which is the safe non-streaming ceiling for Haiku 4.5.
+  const maxTokens = Math.min(16000, 1000 + Math.ceil(evidence.length * 8));
+  output.appendLine(`[cluster] max_tokens=${maxTokens}`);
+
   const response = await client.messages.parse({
     model,
-    max_tokens: Math.min(8192, 200 + Math.ceil(evidence.length * 5)),
+    max_tokens: maxTokens,
     system: [
       { type: 'text', text: CLUSTER_SYSTEM, cache_control: { type: 'ephemeral' } },
     ],
     output_config: { format: zodOutputFormat(ClusterSchema) },
     messages: [{ role: 'user', content: userMessage }],
   });
+
+  if (response.stop_reason === 'max_tokens') {
+    output.appendLine(
+      `[cluster] WARN stop_reason=max_tokens — output may be truncated; cached count of ${response.parsed_output?.clusters.length ?? 0} clusters`,
+    );
+  }
 
   if (cancel.isCancellationRequested) throw new Error('cancelled');
 
