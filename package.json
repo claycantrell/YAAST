@@ -1,0 +1,117 @@
+{
+  "name": "semantic-fold-mode",
+  "displayName": "Semantic Fold Mode",
+  "description": "Fold code symbols into compact, AI-summarized virtual headers in VS Code.",
+  "version": "0.0.1",
+  "publisher": "claycantrell",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/claycantrell/semantic-fold-mode.git"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In restricted mode, summaries are disabled or limited to local-only providers."
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "semanticFoldMode.toggle",
+        "title": "Semantic Fold Mode: Toggle"
+      },
+      {
+        "command": "semanticFoldMode.regenerate",
+        "title": "Semantic Fold Mode: Regenerate Summary at Cursor"
+      },
+      {
+        "command": "semanticFoldMode.promoteToComment",
+        "title": "Semantic Fold Mode: Promote Summary to Doc Comment"
+      },
+      {
+        "command": "semanticFoldMode.clearCache",
+        "title": "Semantic Fold Mode: Clear Summary Cache"
+      }
+    ],
+    "configuration": {
+      "title": "Semantic Fold Mode",
+      "properties": {
+        "semanticFoldMode.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Semantic Fold Mode."
+        },
+        "semanticFoldMode.provider": {
+          "type": "string",
+          "enum": ["vscode-lm", "cloud", "local", "static"],
+          "default": "vscode-lm",
+          "description": "Summary backend. 'static' produces deterministic non-AI headers."
+        },
+        "semanticFoldMode.cloud.model": {
+          "type": "string",
+          "default": "gpt-4o-mini",
+          "description": "Cloud model identifier when provider = 'cloud'."
+        },
+        "semanticFoldMode.local.endpoint": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Local model endpoint (Ollama-compatible) when provider = 'local'."
+        },
+        "semanticFoldMode.local.model": {
+          "type": "string",
+          "default": "qwen2.5-coder",
+          "description": "Local model name when provider = 'local'."
+        },
+        "semanticFoldMode.debounceMs": {
+          "type": "number",
+          "default": 500,
+          "description": "Idle debounce before resummarizing dirty targets."
+        },
+        "semanticFoldMode.concurrency": {
+          "type": "number",
+          "default": 3,
+          "description": "Max in-flight summarization requests."
+        },
+        "semanticFoldMode.allowRemoteInTrustedOnly": {
+          "type": "boolean",
+          "default": true,
+          "description": "Block cloud/remote summarization in untrusted workspaces."
+        },
+        "semanticFoldMode.includeKinds": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["Function", "Method", "Class"],
+          "description": "Symbol kinds eligible for drawer summaries."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18",
+    "watch": "npm run build -- --watch",
+    "compile": "tsc -p ./",
+    "lint": "eslint src --ext ts",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^2.4.0",
+    "esbuild": "^0.23.0",
+    "typescript": "^5.4.0"
+  }
+}
