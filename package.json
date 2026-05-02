@@ -2,7 +2,7 @@
   "name": "semantic-fold-mode",
   "displayName": "Semantic Fold Mode",
   "description": "Fold code symbols into compact, AI-summarized virtual headers in VS Code.",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "publisher": "claycantrell",
   "private": true,
   "license": "MIT",

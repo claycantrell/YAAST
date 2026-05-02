@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Type check
+        run: npx tsc -p ./
+
+      - name: Build extension bundle
+        run: npm run build
+
+      - name: Package VSIX
+        run: npx vsce package --no-dependencies --skip-license -o semantic-fold-mode.vsix
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: semantic-fold-mode-vsix
+          path: semantic-fold-mode.vsix
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: semantic-fold-mode.vsix
+          generate_release_notes: true
+          draft: false
+          prerelease: false
