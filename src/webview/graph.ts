@@ -46,8 +46,16 @@ const search = document.getElementById('search') as HTMLInputElement;
 const layoutSelect = document.getElementById('layout') as HTMLSelectElement;
 const detail = document.getElementById('detail') as HTMLDivElement;
 const refreshBtn = document.getElementById('refresh') as HTMLButtonElement;
+const orphanToggle = document.getElementById('hideOrphans') as HTMLInputElement;
 
 let cy: cytoscape.Core | undefined;
+let lastNodes: IncomingNode[] = [];
+let lastEdges: IncomingEdge[] = [];
+
+window.addEventListener('error', (ev) => {
+  status.textContent = `script error: ${ev.message}`;
+  status.classList.add('error');
+});
 
 refreshBtn.addEventListener('click', () => {
   vscodeApi.postMessage({ type: 'refresh' });
@@ -72,6 +80,7 @@ search.addEventListener('input', () => {
 });
 
 layoutSelect.addEventListener('change', () => runLayout());
+orphanToggle.addEventListener('change', () => renderGraph(lastNodes, lastEdges));
 
 window.addEventListener('message', (ev) => {
   const msg = ev.data as Incoming;
@@ -86,22 +95,43 @@ window.addEventListener('message', (ev) => {
   }
   if (msg.type === 'callGraph') {
     status.textContent = `${msg.nodes.length} symbols, ${msg.edges.length} edges, ${msg.scannedFiles} files (${msg.durationMs}ms)`;
-    renderGraph(msg.nodes, msg.edges);
+    lastNodes = msg.nodes;
+    lastEdges = msg.edges;
+    renderGraph(lastNodes, lastEdges);
   }
 });
 
 vscodeApi.postMessage({ type: 'ready' });
 
 function renderGraph(nodes: IncomingNode[], edges: IncomingEdge[]) {
+  const hideOrphans = orphanToggle.checked;
+  const connected = new Set<string>();
+  for (const e of edges) {
+    connected.add(e.source);
+    connected.add(e.target);
+  }
+  const visibleNodes = hideOrphans ? nodes.filter((n) => connected.has(n.id)) : nodes;
+
+  // Auto-pick a layout that won't choke. cose is O(N²) per iteration and
+  // freezes the webview past a few hundred nodes.
+  const total = visibleNodes.length;
+  const auto = layoutSelect.value === 'auto';
+  if (auto) {
+    if (total <= 150) layoutSelect.dataset.effective = 'cose';
+    else if (total <= 800) layoutSelect.dataset.effective = 'breadthfirst';
+    else layoutSelect.dataset.effective = 'grid';
+  } else {
+    layoutSelect.dataset.effective = layoutSelect.value;
+  }
+
   const elements: ElementDefinition[] = [];
   const fileGroups = new Set<string>();
-  for (const n of nodes) {
-    fileGroups.add(n.filePath);
-  }
+  for (const n of visibleNodes) fileGroups.add(n.filePath);
   for (const f of fileGroups) {
     elements.push({ data: { id: `file:${f}`, label: f, filePath: f }, classes: 'file-group' });
   }
-  for (const n of nodes) {
+  const visibleIds = new Set(visibleNodes.map((n) => n.id));
+  for (const n of visibleNodes) {
     elements.push({
       data: {
         id: n.id,
@@ -118,6 +148,7 @@ function renderGraph(nodes: IncomingNode[], edges: IncomingEdge[]) {
     });
   }
   for (const e of edges) {
+    if (!visibleIds.has(e.source) || !visibleIds.has(e.target)) continue;
     elements.push({
       data: { id: `${e.source}->${e.target}`, source: e.source, target: e.target, count: e.count },
     });
@@ -208,9 +239,32 @@ function renderGraph(nodes: IncomingNode[], edges: IncomingEdge[]) {
 
 function runLayout() {
   if (!cy) return;
-  const name = layoutSelect.value as 'cose' | 'breadthfirst' | 'circle';
-  const opts = { name, animate: false, fit: true, padding: 20 } as unknown as cytoscape.LayoutOptions;
-  cy.layout(opts).run();
+  const effective = (layoutSelect.dataset.effective || layoutSelect.value) as
+    | 'cose'
+    | 'breadthfirst'
+    | 'circle'
+    | 'grid';
+  const total = cy.nodes().length;
+  const base = { name: effective, animate: false, fit: true, padding: 20 };
+  let opts: Record<string, unknown>;
+  if (effective === 'cose') {
+    opts = {
+      ...base,
+      // Cap iterations so it never wedges on borderline-large graphs.
+      numIter: Math.min(800, Math.max(100, Math.floor(20000 / Math.max(1, total)))),
+      nodeRepulsion: 4000,
+      idealEdgeLength: 80,
+      gravity: 0.25,
+    };
+  } else {
+    opts = base;
+  }
+  try {
+    cy.layout(opts as unknown as cytoscape.LayoutOptions).run();
+  } catch (err) {
+    status.textContent = `layout error: ${(err as Error).message}; falling back to grid`;
+    cy.layout({ name: 'grid', fit: true, padding: 20 } as unknown as cytoscape.LayoutOptions).run();
+  }
 }
 
 function escapeHtml(s: string): string {

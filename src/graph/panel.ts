@@ -147,11 +147,16 @@ export class CallGraphPanel {
 <body>
   <header>
     <input id="search" type="search" placeholder="filter by headline / name / file" />
-    <select id="layout">
+    <select id="layout" title="Layout (auto picks based on node count)">
+      <option value="auto">auto</option>
       <option value="cose">force</option>
       <option value="breadthfirst">tree</option>
       <option value="circle">circle</option>
+      <option value="grid">grid</option>
     </select>
+    <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;">
+      <input id="hideOrphans" type="checkbox" checked /> hide unconnected
+    </label>
     <button id="refresh">Refresh</button>
   </header>
   <div id="status">initializing…</div>
