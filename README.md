@@ -1,10 +1,10 @@
 # YAAST — Yet Another AI Summary Tool
 
-A VS Code / Cursor extension that reads code so you don't have to.
+A VS Code / Cursor extension for people who suck at commenting their code.
 
-YAAST puts an AI-generated headline above every function, method, and class — and a file-level overview at the top of every file. Headers are inline, hover-on-demand, persisted to disk, and only regenerate when the underlying code changes. No chat panel, no asking — the summaries are already there.
+YAAST puts an AI-generated headline above every function, method, and class — and a file-level overview at the top of every file. Headers are inline, hover-on-demand, persisted to disk, and only regenerate when the underlying code changes.
 
-The name is a joke. There are a lot of AI summary tools. This one happens to be useful for *navigating* code rather than chatting about it.
+There are a lot of AI summary tools. This one happens to be useful for *navigating* code rather than chatting about it.
 
 ## Install
 
@@ -36,7 +36,7 @@ You'll need an API key from [console.anthropic.com](https://console.anthropic.co
 
 ## What's good about it
 
-- **Ambient, not on-demand.** Summaries are already there when you open a file. You're not asking a chatbot 50 times.
+- **Ambient, not on-demand.** Summaries are already there when you open a file. 
 - **Persistent.** Every summary lives on disk, keyed by content hash. Reopen the file later, no re-spend.
 - **Selective regeneration.** Editing one function only invalidates that function. The page-level "regenerate" button only re-summarizes stale items.
 - **Batched.** Up to 30 symbols per API call. ~50% input-token saving vs. one-by-one. Cap configurable.
@@ -44,7 +44,7 @@ You'll need an API key from [console.anthropic.com](https://console.anthropic.co
 
 ## What it's not (yet)
 
-- **Not a chatbot.** Doesn't answer questions about your code. Cursor and Copilot already do that.
+- **Not a chatbot.** Doesn't answer questions about your code.
 - **Not perfect.** AI summaries can be confidently wrong. The `Confidence: low/medium/high` field helps, but it's also AI-generated.
 - **Not for secret code.** Source goes to Anthropic. Don't point it at code you can't share with a third party. (A local-Ollama provider is stubbed for the future.)
 - **Not yet for non-developers.** Lives only in VS Code / Cursor. The summary engine could power a web UI for non-IDE readers, but that's not built.
